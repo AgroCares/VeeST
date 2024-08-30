@@ -1,5 +1,5 @@
-# Import funs
-# load rtkgps data dxf format -----------------------------------------------------
+# Import funs ------------------------------------
+## load rtkgps data dxf format -----------------------------------------------------
 importGPS <- function(inputdir = paste0(workspace,"./GPS")){
   # load all results from aquo kit from input dir
   gps <- list.files(path= paste0(inputdir), pattern=".dxf", full.names =  T)
@@ -13,7 +13,7 @@ importGPS <- function(inputdir = paste0(workspace,"./GPS")){
   gps <- st_zm(gps, crs = 28992)
   return(gps)
 }
-# load gps in csv format ----------------------------------------------------------
+## load gps in csv format ----------------------------------------------------------
 importGPS2 <- function(inputdir = paste0(workspace,"./GPS"), gpsid = 36){
   # load all results from aquo kit from input dir
   gps2 <- list.files(path= paste0(inputdir), pattern=".csv", full.names =  T)
@@ -27,7 +27,7 @@ importGPS2 <- function(inputdir = paste0(workspace,"./GPS"), gpsid = 36){
   gps2 <- st_as_sf(gps2, coords = c('x','y','z'), crs = 28992)
   return(gps2)
 }
-# load gps profielen     ----------------------------------------------------------
+## load gps profielen     ----------------------------------------------------------
 importGPSprof <- function(inputdir = paste0(workspace,"./GPS slootprofielen"), gpsid = 36){
   # load all results from aquo kit from input dir
   prof <- list.files(path= paste0(inputdir), pattern=".csv", full.names =  T)
@@ -37,22 +37,10 @@ importGPSprof <- function(inputdir = paste0(workspace,"./GPS slootprofielen"), g
   prof <- lapply( prof, fread, stringsAsFactors = FALSE)
   prof <- rbindlist( prof, fill =T, use.names = T, idcol = "ID")
   prof <- merge(dt.names,  prof , by = "ID")
-  #extract label waterlijn
-  prof[grepl('waterlijn', Opmerking), wl:= z]
-  prof[, wl_min := min(wl, na.rm = TRUE), by = "ID"]
-  prof[, wl := mean(wl, na.rm = TRUE), by = "ID"]
-  prof[grepl('waterlijn', Opmerking), numwl := Puntnummer]
-  prof[, numwl_min := min(numwl, na.rm = TRUE), by = "ID"]
-  prof[, numwl_max := max(numwl, na.rm = TRUE), by = "ID"]
-  prof[Puntnummer > numwl_max | Puntnummer < numwl_min, wl := NA]
-  #extract slibdikte
-  prof[, slib := as.numeric(Opmerking)/100]
-  prof[is.na(slib), slib:= 0]
-  
   prof <- st_as_sf(prof, coords = c('x','y','z'), crs = 28992, remove = FALSE)
   return(prof)
 }
-# Import penetrometerdata in txt format -------------------------------------------
+## Import penetrometerdata in txt format -------------------------------------------
 importPen <- function(inputdir = paste0(workspace,"./Penetrometer")){
   
   pen <- list.files(path= paste0(inputdir), pattern=".TXT", full.names =  T)
@@ -97,12 +85,140 @@ importPen <- function(inputdir = paste0(workspace,"./Penetrometer")){
   return(pen)
 }
 
-# Visualise profielen-------------------------------------------------------------
-
-visualise_profiel<- function(proftest){
-  setDT(proftest)
-  zmin <- min(proftest$z-proftest$slib)
+# Proces funs-----------------------
+# get wind direction
+get_cardinal_direction <- function(profiel_nr) {
+  #copy the transect of the oever
+  dt1 <- setDT(profiel_nr)
   
+  #select first and last point
+  first_point <- dt1[Puntnummer == min(Puntnummer)] |> st_as_sf() |> st_transform(4326) 
+  last_point <- dt1[Puntnummer == max(Puntnummer)] |> st_as_sf() |> st_transform(4326)
+  
+  #calculate the azimuth in degrees
+  azimuth <- st_azimuth(first_point, last_point)
+  
+  if (azimuth < 0) {
+    azimuth <- azimuth + 360  # Ensure azimuth is positive
+  }
+  
+  #recalculate to a direction
+  if (azimuth >= 0 && azimuth < 22.5){
+    transect_direction <- "Noord"
+  }
+  if (azimuth >= 22.5 && azimuth < 67.5){
+    transect_direction <- "Noordoost"
+  }
+  if (azimuth >= 67.5 && azimuth < 112.5){
+    transect_direction <- "Oost"
+  }
+  if (azimuth >= 112.5 && azimuth < 157.5){
+    transect_direction <- "Zuidoost"
+  }
+  if (azimuth >= 157.5 && azimuth < 202.5){
+    transect_direction <- "Zuid"
+  }
+  if (azimuth >= 202.5 && azimuth < 247.5){
+    transect_direction <- "Zuidwest"
+  }
+  if (azimuth >= 247.5 && azimuth < 292.5){
+    transect_direction <- "West"
+  }
+  if (azimuth >= 292.5 && azimuth < 337.5){
+    transect_direction <- "Northwest"
+  }
+  
+  #return
+  return(transect_direction)
+}
+# calculate different slopes
+calc_taludhoek <- function(profiel_nr){
+  #copy the trasnect of the oever
+  dt1 <- setDT(profiel_nr)
+  
+  #select first and last point first shore
+  min_dist <- min(dt1[Opmerking == "waterlijn",'dist']) - 3
+  first_point <- dt1[sectie == 'oever' & dist > min_dist] 
+  first_point <- first_point[Puntnummer == min(Puntnummer)]
+  last_point <- dt1[sectie == 'water']
+  last_point <- last_point[Puntnummer == min(Puntnummer)]
+  
+  # calc angle
+  tldk_bvwtr_perc_1 <-  100*(first_point$z-last_point$z) / (last_point$dist-first_point$dist)
+  tldk_bvwtr_graden_1 <-  atan((first_point$z-last_point$z) / (last_point$dist-first_point$dist))*(180/pi)
+  
+  #select first and last point second shore
+  max_dist <- max(dt1[Opmerking == "waterlijn",'dist']) + 3
+  first_point <- dt1[sectie == 'oever' & dist < max_dist]
+  first_point <- first_point[Puntnummer == max(Puntnummer)]  
+  last_point <- dt1[sectie == 'water']
+  last_point <- last_point[Puntnummer == max(Puntnummer)] 
+    
+  # calc angle
+  tldk_bvwtr_perc_2 <-  100*(first_point$z-last_point$z) / (first_point$dist-last_point$dist)
+  tldk_bvwtr_graden_2 <-  atan((first_point$z-last_point$z) / (first_point$dist-last_point$dist))*(180/pi)
+  
+  #select first and last point first shoreline
+  first_point <- dt1[sectie == 'water'] 
+  first_point <- first_point[Puntnummer == min(Puntnummer)] 
+  last_point <- dt1[sectie == 'water' & dist - first_point$dist < 0.5]
+  # selecteer een locatie minder dan 50 cm verder dan de waterlijn
+  last_point <- last_point[Puntnummer == max(Puntnummer)] 
+  
+  # calc angle bovenkant slib
+  tldk_ondwtr_perc_1 <-  100*(first_point$z-last_point$z) / (last_point$dist-first_point$dist)
+  tldk_ondwtr_graden_1 <-  atan((first_point$z-last_point$z) / (last_point$dist-first_point$dist))*(180/pi) 
+  # calc angle onderkant slib
+  tldk_vastbodem_perc_1 <-  100*((first_point$z-first_point$slib) -(last_point$z-last_point$slib)) / (last_point$dist - first_point$dist)
+  tldk_vastbodem_graden_1 <-  atan(((first_point$z-first_point$slib) -(last_point$z-last_point$slib)) / (last_point$dist-first_point$dist))*(180/pi) 
+  
+  #select first and last point second shoreline
+  first_point <- dt1[sectie == 'water'] 
+  first_point <- first_point[Puntnummer == max(Puntnummer)]  
+  last_point <- dt1[sectie == 'water' & first_point$dist - dist < 0.5]
+  # selecteer een locatie minder dan 50 cm verder dan de waterlijn
+  last_point <- last_point[Puntnummer == min(Puntnummer)] 
+    # calc angle
+  tldk_ondwtr_perc_2 <-  100*(first_point$z-last_point$z) / (first_point$dist-last_point$dist)
+  tldk_ondwtr_graden_2 <-  atan((first_point$z-last_point$z) / (first_point$dist-last_point$dist))*(180/pi) 
+  # calc angle onderkant slib
+  tldk_vastbodem_perc_2 <-  100*((first_point$z-first_point$slib) -(last_point$z-last_point$slib)) / (first_point$dist-last_point$dis)
+  tldk_vastbodem_graden_2 <-  atan(((first_point$z-first_point$slib) -(last_point$z-last_point$slib)) / (first_point$dist-last_point$dis))*(180/pi) 
+  
+  #select first and last point watersurface
+  first_point <- dt1[sectie == 'water'] 
+  first_point <- dt1[Puntnummer == min(Puntnummer)] 
+  last_point <- dt1[z < first_point$z -0.10 & sectie == 'water']
+  first_point <- dt1[z < first_point$z +0.10 & sectie == 'oever']
+  
+  first_point_2 <- last_point[Puntnummer == max(Puntnummer)]#water
+  last_point_2 <- first_point[Puntnummer == max(Puntnummer)]#oever
+  first_point <- first_point[Puntnummer == min(Puntnummer)]#oever
+  last_point <- last_point[Puntnummer == min(Puntnummer)]#water
+  # calc angle
+  tldk_wtr_perc_1 <-  100*(first_point$z-last_point$z) / (last_point$dist-first_point$dist)
+  tldk_wtr_graden_1 <-  atan((first_point$z-last_point$z) / (last_point$dist-first_point$dist))*(180/pi) 
+  # calc second shore
+  tldk_wtr_perc_2 <-  100*(first_point_2$z-last_point_2$z) / (first_point_2$dist-last_point_2$dist)
+  tldk_wtr_graden_2 <-  atan((first_point_2$z-last_point_2$z) / (first_point_2$dist-last_point_2$dist))*(180/pi)
+  
+  talud <- data.table(tldk_bvwtr_perc_1,tldk_bvwtr_graden_1,tldk_bvwtr_perc_2,tldk_bvwtr_graden_2,
+             tldk_ondwtr_perc_1,tldk_ondwtr_graden_1,tldk_ondwtr_perc_2,tldk_ondwtr_graden_2,
+             tldk_wtr_perc_1,tldk_wtr_graden_1,tldk_wtr_perc_2 ,tldk_wtr_graden_2,  
+             tldk_vastbodem_perc_1,tldk_vastbodem_graden_1,tldk_vastbodem_perc_2,tldk_vastbodem_graden_2,
+             keep.rownames=T)
+  
+  return(talud)
+
+}
+  
+    
+# Visualise profielen-------------------------------------------------------------
+visualise_profiel<- function(proftest){
+  proftest <- profiel[ID == i,]
+  setDT(proftest)
+  
+  zmin <- min(proftest$z-proftest$slib)
   maxdist_x <- ceiling(max(proftest$dist))
   maxdist_y <- ceiling(max(proftest$z) - min(proftest$z))
   maxdist <- max(maxdist_x,maxdist_y)
@@ -114,7 +230,7 @@ visualise_profiel<- function(proftest){
     geom_ribbon(data=proftest, aes(x= dist,ymin=z-slib, ymax=z), fill = 'brown', alpha =0.5)+
     geom_line(data = proftest, aes(x = dist, y = wl)) + 
     geom_ribbon(data=proftest, aes(x= dist,ymin=z, ymax=wl), fill = 'lightblue', alpha =0.5)+
-    coord_fixed(ratio =1)+
+    coord_fixed(ratio = 1)+
     theme_minimal()+
     theme(
       strip.background = element_blank(),

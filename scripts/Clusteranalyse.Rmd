@@ -1,0 +1,1588 @@
+---
+title: "VeeST"
+subtitle: "Data inventarisatie"
+author: "Laura Moria"
+always_allow_html: yes
+site: bookdown::bookdown_site
+output:
+  bookdown::html_document2:
+    theme: sandstone
+    fig_caption: yes
+    number_sections: yes
+    toc: yes
+    link-citations: yes
+  bookdown::word_document2:
+    reference_docx: NMI Rapport Template 2022.dotx 
+documentclass: book
+css: style.css
+biblio-style: apa
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# rm(list=ls()) 
+require(data.table)
+require(sf)
+require(raster)
+require(terra)
+require(ggplot2)
+require(tidyterra)
+require(RColorBrewer)
+require(plotly)
+
+nmi_data <- paste0(gsub('\\\\', '/', Sys.getenv('USERPROFILE')), '/SPRINGG/Sven Verweij - NMI-DATA/')
+nmi_site <- paste0(gsub('\\\\', '/', Sys.getenv('USERPROFILE')), '/SPRINGG/NMISite - Documents/')
+nmi_proj <- paste0(gsub('\\\\', '/', Sys.getenv('USERPROFILE')), '/SPRINGG/NMISite - Documents/Projecten/O 1900 - O 2000/1922.N.23 VeeST vwsloot vd toekomst/05. Deelproducten/Datainventarisatie/')
+
+setwd(nmi_proj)
+```
+
+# Data inventarisatie VeeST
+
+## Doel
+Ruimtelijk beeld schetsen van de diversiteit aan veensloten als één van de bouwstenen voor de typering van veensloten obv openbare databronnen. 
+Dit is 1 van de eerste stappen in het gehele project. Onderdeel van het in kaart brengen van het speelveld. 
+
+## Aanpak
+### Databronnen
+
+Voor deze analyse maken we gebruik van openbare databronnen.Er is data verzameld voor het het veenweidegebied dat zich bevindt in de beheergebieden van waterschappen AGV, HHNK, Rijnland, HDSR, WDOD, Friesland, Delfland en Schieland en de Kimpenerwaard. 
+
+Voor deze analyse is data gebruikt uit het nationale georegister:
+- BGT watervlakken
+- Grenzen beheergebieden waterschappen
+- Grondsoortenkaart 2006
+- Afvoergebieden en aanvoergebieden
+- Peilbesluitgebieden
+- BOFEK 2012
+- AHN
+- 
+
+Data die beschikbaar is gesteld via het dataportaal van het NHI:
+- LSW afwateringseenheden
+- kwel (LHM 4.1)
+- peilgebieden (begrenzing en jaargemiddelde peil)
+
+Daarnaast is data gebruikt uit de database van NMI:
+- natte omtrek percelen
+- fractie graslandpercelen
+
+Aangeleverd door WenR:
+- trofieklasse veen 2018
+De data is door WenR afgeleid uit bodemkaart van Nederland, schaal 1 : 50 000, eerste uitgave. Op basis van de veensoort en regio zijn de trofieklassen toegekend. Er worden 4 trofieklassen onderscheiden:
+E: 	Eutroof veen  (bosveen en rietveen, verslagen veen)
+M: 	Mesotroof veen (zeggeveen en rietzegge veen en bodemtypen met zand ondergrond zonder podzol, ...Vz)
+MO:	Mesotroof / Oligotroof veen (veenmosveen in West Nederland, met name in Noord-Holland)
+O:	Oligotroof veen (Veenmosveen en de bodemtypen met zandondergrond waarin podzol is ontwikkeld,...Vp)
+- veendikte
+
+```{r stroomgebiedindeling maken include = FALSE, eval=FALSE, echo = FALSE}
+
+# gebiedsbegrenzing LSW is basis ---------
+# lagen worden geexporteerd naar QGIS en daar verder bewerkt
+lsw <- st_read(paste0(nmi_data, "watersysteem/Opgave_oppervlaktewater/products/20230213_oppervlaktewateropgave.gpkg")) %>% st_transform(28992)
+# voor friesland, Rijnland en Delfalnd is lsw te grof, peilbesluitgebied overnemen
+peilbeslt <- st_read(paste0(nmi_proj, "NL/peilbesluitgebied.gpkg")) %>% st_transform(28992)
+peilbeslt <- peilbeslt[vnwschp[vnwschp$waterschapsnaam %in% c("HHS van Delfland","HH van Rijnland","Wetterskip Fryslân" ),],]
+
+strgbd_is <- st_intersection(lsw, peilbeslt)
+strgbd_is <- strgbd_is[,c("oow_id", "oow_name", "oow_nitrogen", "oow_phosphate","text", "geom")]
+# door de union blijven de plassen in friesland gaten (ontbreken in lsw, niet in peilgebieden), geen groot probleem want allemaal boezem of natuur
+strgbd_df <- st_difference(st_buffer(lsw,0), st_union(st_buffer(strgbd_is,0)))
+strgbd <- rbind(strgbd_is, strgbd_df)
+## dit is geen net bestand met meerdere geometrien en slivers
+st_write(strgbd , paste0(nmi_proj,'NL/strgbd_df.gpkg')) #1904
+
+# select only lsw polys which contain peat & are within waterschap of interest----------------
+gb_vn_gs <- gb_vn_gs[gb_vn_gs$text %in% c("Wetterskip Fryslân","Waterschap Drents Overijsselse Delta" , "Hoogheemraadschap van Rijnland" ,"Hoogheemraadschap De Stichtse Rijnlanden","Waterschap Amstel, Gooi en Vecht","Hoogheemraadschap van Delfland" ,"Hoogheemraadschap van Schieland en de Krimpenerwaard", "Waterschap Rivierenland","Hoogheemraadschap Hollands Noorderkwartier"),]
+# alleen veen lsw
+grsrt <- st_read(paste0(nmi_data, "bodem/alterra/Grondsoorten2006/Grondsoortenkaart-2006.shp")) %>% st_transform(28992)
+gb_vn_gs <- strgbd[grsrt[grsrt$OMSCHRIJVI == 'Veen',],]
+# maak geometrie kloppend
+gb_vn_gs$geom_type <- st_geometry_type(gb_vn_gs)
+gb_vn_gs <- st_union(gb_vn_gs, by_feature = TRUE)
+gb_vn_gs <- gb_vn_gs[gb_vn_gs$geom_type %in% c("MULTIPOLYGON","POLYGON"),]
+gb_vn_gs <- st_cast(gb_vn_gs, "MULTIPOLYGON")
+# schrijf weg
+st_write(gb_vn_gs, paste0(nmi_proj,'NL/veen_lsw.gpkg'))
+
+# maak union voor selectie-----------
+st_write(st_union(gb_vn_gs), paste0(nmi_proj,'NL/veen_lsw_union.gpkg')) 
+
+```
+
+```{r databasis, include = FALSE, eval=TRUE, echo = FALSE}
+# gebiedsbegrenzing -------------------------
+# veen/ veenwaterschappen
+wschp <- st_read(paste0(nmi_data, "topo/waterschappen/raw/2019_waterschappen_grenzen.gpkg"))%>% st_transform(28992)
+vnwschpnm <- c("Waterschap Rivierenland" ,"De Stichtse Rijnlanden","HHS van Delfland","Schieland en de Krimpenerwaard","HH van Rijnland","HH Amstel, Gooi en Vecht", "HH Hollands Noorderkwartier","Waterschap Drents Overijsselse Delta","Wetterskip Fryslân" )
+vnwschp <- wschp[wschp$waterschapsnaam %in% vnwschpnm,]
+
+# grondsoortenkaart mestbeleid
+grsrt <- st_read(paste0(nmi_data, "bodem/alterra/Grondsoorten2006/Grondsoortenkaart-2006.shp")) %>% st_transform(28992)
+
+# omtrek stroomgebieden met veen
+# gb_vn_gs_union <- st_read(paste0(nmi_proj,'NL/output/veen_lsw_union.gpkg'))
+gb_vn_gs <- st_read(paste0(nmi_proj,'NL/input/veen_lsw.gpkg'))
+gb_vn_gs <- st_union(gb_vn_gs, by_feature = TRUE)
+
+prov <- st_read(paste0(nmi_data,'topo/provincies/2018-Imergis_provinciegrenzen_kustlijn.shp'))%>% st_transform(28992)
+prov <- st_crop(prov,st_bbox(vnwschp))
+
+# extra krimpenerwaard ------------
+# krimp <- st_union(gb_vn_gs[gb_vn_gs$oow_id %in% c('lsw_38','lsw_86','lsw_189','lsw_191','lsw_221','lsw_295'),])
+# kr_loc <- gb_vn_gs <- st_read(paste0(nmi_proj,'locs_krimp.gpkg'))%>% st_transform(28992)
+
+```
+
+```{r databodem, include = FALSE, eval=TRUE, echo = FALSE}
+# bodemtype en bodemopbouw ------------------
+# of beter geomorfologische kaart? bofek
+# bd50 <- st_read(paste0(nmi_data, "bodem/alterra/Bodemkaart50/products/bodemkaart50.gpkg")) %>% st_transform(28992) # alleen nodig voor GT, maar die gebruiken we niet vanwege kwelkaart, drooglegging obv AHN en peil
+bofek <- terra::rast(paste0(nmi_proj,'rasters/bofek.tiff')) 
+bofek_lb <- fread(paste0(nmi_proj,'rasters/explainer_bofek.csv'))
+bofek_lb <- bofek_lb[,c("value","veencluster")]
+# bofek_lb <- bofek_lb[,c("value","description")]
+trvn <- terra::rast(paste0(nmi_proj,'rasters/trofieklasse_veen.tiff'))
+trvn_lb <- fread(paste0(nmi_proj,'rasters/explainer_trofieklasse_veen.csv'))
+# vndk <- terra::rast(paste0(nmi_proj,'rasters/veendikte2014_ned.tiff'))
+bofek <- terra::crop(bofek, gb_vn_gs)
+bofek <- terra::mask(bofek, gb_vn_gs)
+bofek <- terra::mask(bofek, grsrt[grsrt$OMSCHRIJVI == "Veen",])
+
+trvn <- terra::crop(trvn, gb_vn_gs)
+trvn <- terra::mask(trvn, gb_vn_gs)
+trvn <- terra::mask(trvn, grsrt[grsrt$OMSCHRIJVI == "Veen",])
+# vndk <- terra::crop(vndk, gb_vn_gs)
+# vndk <- terra::mask(vndk, grsrt[grsrt$OMSCHRIJVI == "Veen",])
+
+```
+
+```{r datadrooglegging, include = FALSE, eval=TRUE, echo = FALSE}
+# drooglegging --------------
+# mean AHN
+ahn <-  terra::rast(paste0(nmi_proj, "/rasters/ahn3_25m_dtm.tiff"))
+# eenheid? tov NAP (cm of meter)
+peil <- terra::rast(paste0(nmi_proj,'NHI/Jaarrondstreefpeil_(25_m)_UM13FR6_reproj.tif')) 
+# ruimtelijke rastereenheden gelijk maken 
+peil <- terra::resample(peil, ahn)
+
+# drooglegging tov ahn totaal 
+#ahn in m tov NAP
+#peil in m tov NAP
+drglg <- c(peil, ahn)
+drglg$drlg <- drglg$ahn3_25m_dtm - drglg$`Jaarrondstreefpeil_(25_m)_UM13FR6_reproj`
+gb_vn_gs <- st_as_sf(gb_vn_gs)
+drglg_vn <- terra::crop(drglg, gb_vn_gs)
+drglg_vn <- terra::mask(drglg_vn, gb_vn_gs)
+drglg_vn <- terra::mask(drglg_vn, grsrt[grsrt$OMSCHRIJVI == 'Veen',])
+
+#percentielen berekenen
+global(drglg_vn$drlg, fun = quantile, na.rm= TRUE)
+global(drglg_vn$drlg, fun = stats::quantile, probs = 0.90, na.rm=TRUE)
+
+# crop ahn naar watervlakken om drooglegging nabij sloten te bepalen, als talud schuin is word drglgg onderschat omdat mv niet in de crop zit, beeld is hetzelfde als drooglegging tov maaiveld ----------------------------------
+# watervlakken (voor drooglegging)
+# bgt_vw <- terra::rast(paste0(nmi_proj, 'rasters/bgt_mosaic_25m.tiff'))
+# ahnwv <- crop(ahn, bgt_vw, snap= "near")
+# ahnwv <- terra::mask(ahnwv, bgt_vw)
+# # ruimtelijke rastereenheden gelijk maken
+# peil2 <- terra::crop(peil, bgt_vw, snap= "near")
+# peil2 <- terra::mask(peil2, bgt_vw)
+# # drooglegging nabij sloot
+# drglgslt <- c(peil2, ahnwv)
+# drglgslt$drlg <- drglgslt$ahn3_25m_dtm - drglgslt$`Jaarrondstreefpeil_(25_m)_UM13FR6_reproj`
+# drglgslt_vn <- terra::crop(drglgslt, gb_vn_gs)
+# drglgslt_vn <- terra::mask(drglgslt_vn, gb_vn_gs)
+# drglgslt_vn <- terra::mask(drglgslt_vn, grsrt[grsrt$OMSCHRIJVI == 'Veen',])
+# 0 -> drglgslt_vn$drlg[drglgslt_vn$drlg < 0]
+# 2 -> drglgslt_vn$drlg[drglgslt_vn$drlg > 2]
+
+
+```
+
+```{r databodemhydrologie, include = FALSE, eval=TRUE, echo = FALSE}
+
+# hydrologie----------------
+# watervlakken lsw (voor percentage open water, slootbreedte <- watvlk[watvlk$class == '',])
+# load polygons of LHM4.1 - kwel/ wegzijging
+kwel <-  terra::rast(paste0(nmi_proj, "NHI/LHM4_1_Gemiddelde_kwel-inzijging_2011-2018_(mm_dag)_5G553SX.tif")) 
+kwel<- terra::crop(kwel, gb_vn_gs)
+kwel <- terra::mask(kwel, gb_vn_gs)            
+kwel<- terra::mask(kwel, grsrt[grsrt$OMSCHRIJVI == "Veen",])
+
+# ruimtelijke rastereenheden gelijk maken 
+kwel2 <- terra::resample(kwel, ahn)
+#percentielen berekenen
+global(kwel2$`LHM4_1_Gemiddelde_kwel-inzijging_2011-2018_(mm_dag)_5G553SX`, fun = quantile, na.rm= TRUE)
+global(kwel2$`LHM4_1_Gemiddelde_kwel-inzijging_2011-2018_(mm_dag)_5G553SX`, fun = stats::quantile, probs = 0.1, na.rm=TRUE)
+
+# landgebruik----------------
+# load polygons of BRP voor landgebruik
+# bodemschat data
+bs <- st_read(paste0(nmi_data, "bodem/bodemschat/products/BS5/BS5_2021.gpkg")) 
+bs <- bs[grsrt[grsrt$OMSCHRIJVI == 'Veen',],]
+bs <- bs[vnwschp,]
+quantile(bs$A_CLAY_MI, probs = c(0,0.1,0.25,0.5,0.75,0.9,0.95,1), na.rm= TRUE)
+
+# natuurbeheerplan------------
+nbp_agr <- st_read(paste0(nmi_proj,'NL/overig/imna_nbp_viewer_zoek_gebied_agrarischPolygon.shp')) #1904
+nbp_amb <- st_read(paste0(nmi_proj,'NL/overig/imna_nbp_viewer_beheer_gebied_ambitiePolygon.shp'))
+
+# gras <- terra::rast(paste0(nmi_proj, "/rasters/brp2005_2022_category_fractiegrasland.tiff"))
+# gras<- terra::crop(gras, gb_vn_gs)
+# gras<- terra::mask(gras, grsrt[grsrt$OMSCHRIJVI == "Veen",])
+
+```
+
+```{r datapercelen, include = FALSE, eval=FALSE, echo = FALSE}
+# breedte percelen: natte omtrek ---------
+no <- st_read(paste0(nmi_data,'nmi/natte_omtrek/brp19_natteomtrek.gpkg')) %>% st_transform(28992)
+no <- no[grsrt[grsrt$OMSCHRIJVI == 'Veen',],]
+1 -> no$natte_omtrek[no$natte_omtrek > 1]
+no <- no[vnwschp,]
+gb_vn_gs$oppvl <- st_area(gb_vn_gs)
+gb_vn_gs$oppvl <- as.numeric(gb_vn_gs$oppvl)
+no$oppvl <- st_area(no)
+no$oppvl <- as.numeric(no$oppvl)
+# alleen percelen die afwateren op water
+no <- no[no$omtrek_nat > 0,]
+# brede percelen met weinig sloten is een hoog getal, smalle percelen met veel sloten is laag
+no$afwatopp <- no$oppvl/(no$omtrek_nat/2) 
+no <- no[no$afwatopp < 300,] # 99 percentiel voor weghalen outliers
+quantile(no$afwatopp, probs = c(0,0.1,0.25,0.5,0.75,0.9,0.99,1), na.rm= TRUE)
+# no_rast <- terra::rasterize(no, ahn, field = "natte_omtrek", fun = "mean", filename="no_rast.tif", overwrite = TRUE)
+
+#voorbereiden data voor breedte percelen, percentage open water-------------
+#lsw/ peilgebieden als basiseenheid voor oppervlak land
+gb_vn_gs$id_lsw <- gb_vn_gs$id # nieuw gemaakte id obv gebiedsindeling
+uniqueN(gb_vn_gs$id_lsw)
+gb_vn_gs$geomtype <-st_geometry_type(gb_vn_gs)
+gb_vn_gs <- gb_vn_gs[gb_vn_gs$geom_type %in% c("POLYGON", "MULTIPOLYGON"),]
+gb_vn_gs$oppvl <- st_area(gb_vn_gs)
+gb_vn_gs$oppvl <- as.numeric(gb_vn_gs$oppvl)
+setDT(gb_vn_gs)
+gb_vn_gs[,totoppl := sum(oppvl), by = 'id_lsw']
+gb_vn_gs$id_lsw <- as.numeric(gb_vn_gs$id_lsw)
+
+# watervlakken union per lsw voor oppervlak water (voor percentage open water)
+# deze laag werkt voor breedte sloten, beter om te vervangen worden door dissolve overlappende watervlakken voor gedetaileerder beeld
+wv_lsw <- st_read(paste0(nmi_proj, "NL/output/veen_lsw_watervlakken_union_area.gpkg")) 
+wv_lsw$id_lsw <- wv_lsw$lsw_fid
+uniqueN(wv_lsw$id_lsw)
+wv_lsw$geomtype <-st_geometry_type(wv_lsw)
+wv_lsw <- wv_lsw[wv_lsw$geomtype %in% c("MULTIPOLYGON","POLYGON"),]
+wv_lsw$watoppvl <- as.numeric(wv_lsw$area)
+# benadering oppervlak en breedte waterlopen per lsw----------------
+wv_lsw$lengte <- wv_lsw$perimeter/2
+wv_lsw$breedte <- wv_lsw$watoppvl / wv_lsw$lengte
+# watervlakken union per lsw_stroomgebied, geen enkele sloot wel meerdere waterlopen per gebied
+wvslot <- wv_lsw[wv_lsw$class == 'waterloop',]
+wvslot <- wvslot[wvslot$breedte < 15,] # 99 percetiel voor weghalen outliers
+#perecntielen, gecorrigeerd voor 99 percentiel = 15 meter omdat er soms hele brede meren als waterloop tussen zitten
+quantile(wvslot$breedte, probs = c(0,0.1,0.25,0.5,0.75,0.9,0.95,0.99,1), na.rm= TRUE)
+
+# let op: fid in wv gelijk aan fid lsw gebieden
+wv_lsw <- st_drop_geometry(wv_lsw)
+setDT(wv_lsw)
+wv_lsw$id_lsw <- as.numeric(wv_lsw$id_lsw)
+wv_lsw <- unique(wv_lsw[, c("id_lsw","watoppvl", "breedte","class")])
+wv_lsw <- wv_lsw[!is.na(wv_lsw$watoppvl),]
+# wateroppervlak per lsw_peilgebied
+wv_lsw_oplsw <- dcast(wv_lsw, id_lsw~class, value.var = 'watoppvl', fun.aggregate = sum)
+wv_lsw_oplsw <- wv_lsw_oplsw[, watoppvl:= rowSums(.SD), .SDcols= c("greppel, droge sloot", "waterloop","watervlakte"), by = "id_lsw"]
+# breedte sloten per lsw
+wv_lsw_breedte <- dcast(wv_lsw, id_lsw~class, value.var = 'breedte', fun.aggregate = mean)
+wv_lsw_breedte <- wv_lsw_breedte[,c("id_lsw","waterloop")]
+wv_lsw_breedte$breedtewl <- wv_lsw_breedte$waterloop
+
+# afwateringsindicatoren en oppervlak land en water samen------------------
+# trofie, klei, drlg beter koppelen aan watervlakken voor meer detail, ruimtelijk correcter
+gb_vn_gs <- st_as_sf(gb_vn_gs)
+
+#koppel indeling stroomgebied, percelen
+no_gb_vn_gs <- st_join(st_buffer(no, 0), gb_vn_gs,
+               join = st_intersects,
+               largest = TRUE, 
+               left = TRUE)
+st_write(st_as_sf(no_gb_vn_gs), paste0(nmi_proj,'NL/no_gb_vn_gs_check1.gpkg'))
+# st_read(paste0(nmi_proj,'NL/no_gb_vn_gs_check1.gpkg'))
+
+#koppel breedte waterlopen, fractie open water (per stroomgebied) aan percelen
+setDT(no_gb_vn_gs)
+no_gb_vn_gs <- merge.data.table(no_gb_vn_gs, wv_lsw_breedte[,c('id_lsw','breedtewl')], by = "id_lsw", all.x = TRUE)
+#oppervlak water per stroomgebied
+no_gb_vn_gs <- merge.data.table(no_gb_vn_gs, wv_lsw_oplsw[,c('id_lsw','waterloop',"watoppvl")], by = "id_lsw", all.x = TRUE)
+
+no_gb_vn_gs[,frac_water := waterloop/(totoppl-(watoppvl-waterloop)), c('id_lsw')]
+no_gb_vn_gs$frac_water <- as.numeric(no_gb_vn_gs$frac_water)
+gb_vn_gs_fout <- no_gb_vn_gs[is.na(no_gb_vn_gs$frac_water),]
+st_write(st_as_sf(gb_vn_gs_fout), paste0(nmi_proj,'NL/gb_vn_gs_fout.gpkg'))
+
+no_gb_vn_gs <- no_gb_vn_gs[no_gb_vn_gs$frac_water <= 1,]
+no_gb_vn_gs <- st_as_sf(no_gb_vn_gs)
+st_write(no_gb_vn_gs, paste0(nmi_proj,'NL/no_gb_vn_gs_check2.gpkg'))
+
+#koppel drooglegging 
+v_brp <- terra::vect(no_gb_vn_gs)
+drlg_brp <- terra::extract(drglg_vn, no_gb_vn_gs)
+setDT(drlg_brp)
+# min of percentiel 10 als rep voor oever drooglegging toekennen aan geheel perceel (ID), klopt niet per se, alleen als percelen bol zijn/ verzakte oever
+drlg_brp <- drlg_brp[, as.list(quantile(.SD, prob = c(0.05, .1, .5, 0.95), na.rm = T)), by = "ID",.SDcols = c("drlg")]
+no_gb_vn_gs$id <-  seq.int(nrow(no_gb_vn_gs))
+no_gb_vn_gs <- merge(no_gb_vn_gs, drlg_brp, by.x = 'id', by.y = "ID", all.x = T)
+no_gb_vn_gs$drlg <- ifelse(no_gb_vn_gs$`50%`> 0, no_gb_vn_gs$`50%`, ifelse(no_gb_vn_gs$`95%`>0, no_gb_vn_gs$`95%`, 0))
+# 0 -> no_gb_vn_gs$drlg[is.na(no_gb_vn_gs$drlg)]
+2 -> no_gb_vn_gs$drlg[no_gb_vn_gs$drlg > 2]
+
+# relatie perceelbreedte/ slootbreedte - kleigehalte
+# kleur hist drooglegging/ breedten
+
+#koppel trofiegehalte veen
+tv_brp <- terra::extract(trvn, no_gb_vn_gs)
+setDT(tv_brp)
+tv_brp <- tv_brp[!(tv_brp$trofieklasse_veen == 0),]
+tv_brp <- tv_brp[,median(trofieklasse_veen, na.rm = T), by = "ID"]
+tv_brp$trofie <- tv_brp$V1; NULL -> tv_brp$V1
+no_gb_vn_gs <- merge(no_gb_vn_gs, tv_brp, by.x = 'id', by.y = "ID", all.x = T)
+3 -> no_gb_vn_gs$trofie[no_gb_vn_gs$trofie == 2.5]
+4 -> no_gb_vn_gs$trofie[no_gb_vn_gs$trofie == 3.5]
+
+#koppel klei- en oc gehalte
+no_gb_vn_gs <- st_join(
+    no_gb_vn_gs,
+    bs,
+    join = st_intersects,
+    largest = TRUE, 
+    left = TRUE
+  )
+
+#opslaan 
+save(no_gb_vn_gs, gb_vn_gs, wv_lsw, wvslot, file = paste0(nmi_proj, "brp_watbte_drglg.RData"))
+# load(file = paste0(nmi_proj, "brp_watbte_drglg.RData"))
+
+#percentielen fractie open water
+quantile(no_gb_vn_gs$frac_water, probs = c(0,0.1,0.25,0.5,0.75,0.9,0.95,0.99,1), na.rm= TRUE)
+
+# creëren afwateringsindicator -----------------
+# als er weinig sloten om brede percelen liggen is getal groot en veel sloten om smalle percelen is getal klein
+# schaal opp/natte omtrek (nat = smalle percelen is klein getal = 0), slootbreedte (nat = brede sloten is groot getal = 1-0) en fractie open water per lsw (nat = grote fractie = 1-0) voor combikaart afwateringseenheden
+#correctie als op kaart: no, breedte < 15, fract water <0.4
+# no_gb_vn_gs <- no_gb_vn_gs[no_gb_vn_gs$frac_water < 0.6,] # 99 percetile
+no_gb_vn_gs[, afwatopp_s := pnorm(q = no_gb_vn_gs$afwatopp, mean = mean(no_gb_vn_gs$afwatopp), sd = sd(no_gb_vn_gs$afwatopp))]
+no_gb_vn_gs[, breedte_s := 1- (pnorm(q = breedtewl, mean = mean(no_gb_vn_gs$breedtewl), sd = sd(no_gb_vn_gs$breedtewl)))]
+no_gb_vn_gs[, frac_water_s := 1- (pnorm(q = frac_water, mean(no_gb_vn_gs$frac_water), sd = sd(no_gb_vn_gs$frac_water)))]
+no_gb_vn_gs <-no_gb_vn_gs[!is.na(no_gb_vn_gs$id_lsw),]
+no_gb_vn_gs <- st_as_sf(no_gb_vn_gs)
+st_write(no_gb_vn_gs, paste0(nmi_proj,'NL/no_gb_vn_gs_finalcheck.gpkg'))
+
+#indicator van natheid of afwatering, natter (relatief veel water, veel natte omtrek, smalle percelen), nat = 0 en droog is 1
+no_gb_vn_gs$indafwater <- no_gb_vn_gs$afwatopp_s + no_gb_vn_gs$breedte_s + no_gb_vn_gs$frac_water_s
+quantile(no_gb_vn_gs$indafwater, probs = c(0,0.1,0.25,0.5,0.75,0.9,0.95,0.99,1), na.rm= TRUE)
+# koppeling drooglegging en iets slims van bodemtype
+# no_gb_vn_gs[,afwatopp_s := pnorm(q = afwatopp, mean = mean(no_gb_vn_gs$afwatopp), sd = sd(no_gb_vn_gs$afwatopp))]
+
+#maak rasters
+# fractopenwater_rast <- terra::rasterize(gb_vn_gs_wv, ahn, field = "frac_water", fun = "mean", overwrite=TRUE, file = "fractopenwater_rast.tif")
+# breedte_slot_rast_1 <- terra::rasterize(wvslot, ahn, field = "breedte", fun = "mean", overwrite=TRUE, file="breedte_slot_rast.tif")
+# terra::writeRaster(fractopenwater_rast, "fractopenwater_rast.tif")
+
+
+```
+
+```{r reservedata}
+#peilvakken
+plagv <- NULL
+pldlf <- st_read(paste0(nmi_proj, "/Delfland/Peilgebied_met_vastgesteld_peil_export20171109.shp")) %>% st_transform(28992)
+plhdsr <- st_read(paste0(nmi_proj, "/HDSR/BR_Peilgebieden.shp")) %>% st_transform(28992)
+# cols <- names(plhdsr[6:10]
+plhdsr$peil <- plhdsr[, lapply(.SD, mean, na.rm=TRUE), by=CODE, .SDcols=cols]
+plrijn <- st_read(paste0(nmi_proj, "/HH_Rijnland/PraktijkPeilenKaart20211021.shp")) %>% st_transform(28992)
+plnzv <- st_read(paste0(nmi_proj, "/NZV/Peilgebieden.shp")) %>% st_transform(28992)
+plwdod <- st_read(paste0(nmi_proj, "/WDOD/Peilgebieden.shp")) %>% st_transform(28992)
+plwf <- st_read(paste0(nmi_proj, "/WF/peilenbeheerkaart.shp")) %>% st_transform(28992)
+plwsrl <- st_read(paste0(nmi_proj, "/WSRL/wsrl_peilgebieden_vigerend.shp")) %>% st_transform(28992)
+
+
+# breedte percelen: natte omtrek per lsw, ik wil natteomtrek tov perceelsoppervlak
+
+
+
+```
+
+```{r watervlakorg, include = FALSE, eval=FALSE, echo = FALSE}
+# breedte sloten------------------
+# wv voor slootbreedte is een groot bestand met veel ruimtelijk overlappende vlakken
+# gebruik alleen voor visualisatie, oppervlakken en omtrek klopt niet 
+# fid van watervlakken is niet uniek :(
+wv <- st_read(paste0(nmi_proj, "NL/output/veen_lsw_watervlakken_area.gpkg")) 
+wv$geomtype <-st_geometry_type(wv)
+#checks op format 
+uniqueN(wv$lsw_id)
+unique(wv$geomtype)
+#alleen correcte geometrieen
+wv <- wv[wv$geomtype %in% c("MULTIPOLYGON","POLYGON"),]
+wv1 <- st_cast(st_union(wv),"POLYGON")
+
+#checks op format 
+uniqueN(wv$fid)
+n_occur <- data.frame(table(wv$fid))
+n_occur[n_occur$Freq > 1,]
+
+wv <- setDT(wv)
+wv$oppvl <- wv$area
+wv$lengte <- wv$perimeter/2
+wv$breedte <- wv$oppvl / wv$lengte
+wv$breedte <- as.numeric(wv$breedte)
+wv <- st_as_sf(wv)
+wvslot <- wv[wv$class == 'waterloop',]
+
+#perecntielen
+setDT(wvslot)
+quantile(wvslot$breedte, probs = c(0,0.1,0.25,0.5,0.75,0.9,0.95,1), na.rm= TRUE)
+```
+
+### Databewerking
+
+Voor deze studie is zijn eerst een aantal indelingen gemaakt die het studiegebied afbakenen. Er zijn stroomgebieden gedefinieerd op basis van de oppervlaktewaterschematisatie van het Landelijk Hydrologisch Model. Het regionale oppervlaktewatersysteem van Nederland is geschematiseerd in ruim 8500 stroomgebiedjes (LSW's). Grotere boezemkanalen (het hoofdwatersysteem) zit niet in dit schema. De stroomgebieden in de beheergebieden van Wetterskip Fryslan en de Hoogheemraadschappen van Rijnland en Delfland zijn erg grof. Daarom zijn deze verder opgeknipt op basis van een kaart met peilbesluitgebieden uit het nationale georegister. 
+
+Vervolgens zijn alleen stroomgebieden geselecteerd die in de beheergebieden van Wetterskip Fryslân, Waterschap Drents Overijsselse Delta, Hoogheemraadschap van Rijnland, Hoogheemraadschap De Stichtse Rijnlanden, Waterschap Amstel, Gooi en Vecht, Hoogheemraadschap van Delfland, Hoogheemraadschap van Schieland en de Krimpenerwaard, Waterschap Rivierenland, Hoogheemraadschap Hollands Noorderkwartier waarin veen ligt. De ligging van veen is gebaseerd op de grondsoortenkaart uit 2006. 
+
+Het bestand met waterdelen uit de BGT is gekoppeld aan de stroomgebieden waar veen in ligt. Hiervoor zijn alleen de polygonen en de mutipolygonen uit dit bestand geselectreerd. De breedte van sloten is bepaald door van waterdelen in de klasse "waterlopen" (andere klassen zijn watervlakten, zee, greppel, transitie) de helft van de omtrek te delen door het wateroppervlakoppervlak. 
+
+De BGT watervlakken bevat veel vlakken die overlappen. Deze zijn, per stroomgebied en klasse, met elkaar tot een vlak versmolten om een betrouwbare inschatting te kunnen maken van het wateroppervlak. De fractie open water is per stroomgebied bepaald door het wateroppervlak te delen door het totaal oppervlak.  
+
+De drooglegging is bepaald op een schaal van 25 meter resolutie. De het waterpeil van de hoogte van het maaiveld af te trekken.
+
+De natte omtrek is bepaald door de lengte van een perceelrand die aan een waterdeel grenst te delen door de totale omtrek van een perceel. Het is dus een indicatie van de perceelbreedte die afwatert op oppervlaktewater.
+
+Voor de afwateringsindicator zijn de indicatoren perceelsbreedte (oppervlak perceel/ natte omtrek), gemiddelde breedte van waterlopen en de fractie open water van waterlopen geschaald, waarbij een 0 staat voor nat (smalle percelen, brede sloten, veel open water) en een 1 voor droog. 
+
+We kunnen deze kaart nog corrigeren voor kwel/wegzijging en gemiddeld neerslagoverschot om er een stromingindicator kaart van te maken.
+
+```{r kaarten}
+# ADD multiple pars-------
+setDT(no_gb_vn_gs)
+
+# breedte sloot
+no_gb_vn_gs <- no_gb_vn_gs[no_gb_vn_gs$breedtewl < 15,]
+breakvar_slootbr <-  pretty(no_gb_vn_gs$breedtewl, n = 10) # make 10 pretty intervals 
+labelvar_slootbr <-  paste0(breakvar_slootbr[1:(length(breakvar_slootbr)-1)], "-", breakvar_slootbr[2:length(breakvar_slootbr)])
+no_gb_vn_gs[, var_slbr := cut(breedtewl, n = length(breakvar_slootbr)-1, breaks = breakvar_slootbr, label = labelvar_slootbr)]
+
+# breedte perceel
+breakvar_afwat <-  pretty(no_gb_vn_gs$afwatopp, n = 20) # make 10 pretty intervals 
+labelvar_afwat <-  paste0(breakvar_afwat[1:(length(breakvar_afwat)-1)], "-", breakvar_afwat[2:length(breakvar_afwat)])
+no_gb_vn_gs[, var_perbr := cut(afwatopp, n = length(breakvar_afwat)-1, breaks = breakvar_afwat, label = labelvar_afwat)]
+
+# fractie open water
+breakvar_opwat <-  pretty(no_gb_vn_gs$frac_water, n = 10) # make 10 pretty intervals 
+labelvar_opwat <-  paste0(breakvar_opwat[1:(length(breakvar_opwat)-1)], "-", breakvar_opwat[2:length(breakvar_opwat)])
+no_gb_vn_gs[, var_opwat := cut(frac_water, n = length(breakvar_opwat)-1, breaks = breakvar_opwat, label = labelvar_opwat)]
+
+# drooglegging
+# na verwijderen en max maken
+breakvar_drlg <-  pretty(no_gb_vn_gs$drlg, n = 10) # make 10 pretty intervals 
+labelvar_drlg <-  paste0(breakvar_drlg[1:(length(breakvar_drlg)-1)], "-", breakvar_drlg[2:length(breakvar_drlg)])
+no_gb_vn_gs[, var_drlg := cut(drlg, n = length(breakvar_drlg)-1, breaks = breakvar_drlg, label = labelvar_drlg)]
+
+# kleigehalte/ organisch stof
+breakvar_klei <-  pretty(no_gb_vn_gs$A_CLAY_MI, n = 10) # make 10 pretty intervals 
+labelvar_klei <-  paste0(breakvar_klei[1:(length(breakvar_klei)-1)], "-", breakvar_klei[2:length(breakvar_klei)])
+no_gb_vn_gs[, var_klei := cut(A_CLAY_MI, n = length(breakvar_klei)-1, breaks = breakvar_klei, label = labelvar_klei)]
+
+breakvar_os <-  pretty(no_gb_vn_gs$A_SOM_LOI, n = 10) # make 10 pretty intervals 
+labelvar_os <-  paste0(breakvar_os[1:(length(breakvar_os)-1)], "-", breakvar_os[2:length(breakvar_os)])
+no_gb_vn_gs[, var_os := cut(A_SOM_LOI, n = length(breakvar_os)-1, breaks = breakvar_os, label = labelvar_os)]
+
+# prepdata
+no_gb_vn_gs <- st_as_sf(no_gb_vn_gs)
+no_gb_vn_gs <- st_cast(no_gb_vn_gs, "MULTIPOLYGON")
+no_gb_vn_gs <- no_gb_vn_gs[grsrt[grsrt$OMSCHRIJVI == 'Veen',],]
+filcol <- colorRampPalette(brewer.pal(11, 'Spectral'))
+
+# krimpenerwaard--------------------
+krimpno <- st_intersection(no, krimp)
+krimpro <- st_intersection(ro, krimp)
+krimpbs <- st_intersection(bs, krimp)
+krimp <- st_as_sf(krimp)
+krimpd <- terra::crop(drglg, krimp)
+krimpd  <- terra::mask(krimpd, krimp) 
+drglg_vn <- krimpd
+
+krimpb <- terra::crop(bofek, krimp)
+krimpb  <- terra::mask(krimpb, krimp) 
+bofek <- krimpb
+
+# kleigehalte ------------------------
+breakvar <-  pretty(bs$A_CLAY_MI , n = 10) # make pretty intervals
+labelvar <-  paste0(breakvar[1:(length(breakvar)-1)], "-", breakvar[2:length(breakvar)])
+setDT(bs)
+bs[, var_cut := cut(A_CLAY_MI, n = length(breakvar)-1, breaks = breakvar, label = labelvar)]
+bs <- st_as_sf(bs)
+filcol <- colorRampPalette(brewer.pal(10, 'Spectral'))
+
+ggplot() +
+  ggspatial::annotation_map_tile(type = "cartolight",zoom = 12) + 
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = vnwschp, aes(), col = 'darkblue', fill = NA) +
+  geom_sf(data = bs, aes(fill = var_cut, col = var_cut), color = NA) +
+  scale_fill_manual(values = filcol(length(breakvar)-1),
+  na.value="white",  drop = FALSE, name = "") +
+  scale_colour_manual(values = filcol(length(breakvar)-1),
+  na.value="white", name = "") +
+  # geom_sf(data = kr_loc, aes(), col = 'black', fill = 'black', size = 5) +
+  # geom_sf_text(data = kr_loc, aes(label = locatie), size = 18, nudge_y = 800) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("kleigehalte", ncol =1))
+ggsave(filename = paste0("kleigehalte.jpeg"), width = 60, height = 65, unit = "cm")
+
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = A_CLAY_MI, fill = var_os), binwidth=1, color="black")+
+  scale_fill_manual(values = filcol(length(breakvar_os)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("kleigehalte %")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("OS"))
+ggsave(filename = paste0("hist_kleigehalte_os.jpeg"), width = 40, height = 45, unit = "cm")
+
+# organische fractie ------------------------
+breakvar <-  pretty(bs$A_SOM_LOI , n = 10) # make pretty intervals
+labelvar <-  paste0(breakvar[1:(length(breakvar)-1)], "-", breakvar[2:length(breakvar)])
+setDT(bs)
+bs[, var_cut := cut(A_SOM_LOI, n = length(breakvar)-1, breaks = breakvar, label = labelvar)]
+bs <- st_as_sf(bs)
+filcol <- colorRampPalette(brewer.pal(10, 'Spectral'))
+
+ggplot() +
+  ggspatial::annotation_map_tile(type = "cartolight",zoom = 12) + 
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = vnwschp, aes(), col = 'darkblue', fill = NA) +
+  geom_sf(data = bs, aes(fill = var_cut, col = var_cut), color = NA) +
+  scale_fill_manual(values = filcol(length(breakvar)-1),
+  na.value="white",  drop = FALSE, name = "") +
+  scale_colour_manual(values = filcol(length(breakvar)-1),
+  na.value="white", name = "") +
+  # geom_sf(data = kr_loc, aes(), col = 'black', fill = 'black', size = 5) +
+  # geom_sf_text(data = kr_loc, aes(label = locatie), size = 18, nudge_y = 800) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("organische stof %", ncol =1))
+ggsave(filename = paste0("organischestof.jpeg"), width = 60, height = 65, unit = "cm")
+
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs[no_gb_vn_gs$A_SOM_LOI > 15,], aes(x = A_CLAY_MI, fill = var_perbr), binwidth=1, color="black")+
+  scale_fill_manual(values = filcol(length(breakvar_afwat)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("kleigehalte %")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("perceelbreedte"))
+ggsave(filename = paste0("hist_kleigehalte_perceelbreedte_15organisch.jpeg"), width = 40, height = 45, unit = "cm")
+
+# drooglegging------------------
+
+drglg_vn_klein <- clamp(drglg_vn, upper = 2) #tov gemiddeld maaivel
+drglg_vn_klein <- clamp(drglgslt_vn, upper = 2) #tov 25 meter rond sloten
+0 -> drglg_vn$drlg[drglg_vn$drlg < 0]
+2 -> drglg_vn$drlg[drglg_vn$drlg > 5]
+
+ggplot() +
+  geom_histogram(data = drglg_vn, aes(x = drlg), binwidth=0.1, color="black", fill="white")+
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("drooglegging (m)")+
+  ylab("oppervlak (x25 m2)")+
+  guides(color = "none", fill = guide_legend("drooglegging (m)"))
+
+#drooglegging gekleurd op perceelbreedte
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = drlg, fill = var_perbr), binwidth=0.1, color="black")+
+  scale_fill_manual(values = filcol(length(breakvar_afwat)-1),na.value="white", drop = TRUE, name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +
+  xlab("drooglegging (m)")+
+  ylab("oppervlak (x25 m2)")+
+  guides(color = "none", fill = guide_legend("breedte perceel(m)"))
+ggsave(filename = paste0("hist_drglg_vn_brp_10P_perbt.jpeg"), width = 40, height = 45, unit = "cm")
+
+#drooglegging gekleurd op slootbreedte
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = drlg, fill = var_slbr), binwidth=0.1, color="black")+
+  scale_fill_manual(values = filcol(length(breakvar_slootbr)-1),na.value="white", drop = TRUE, name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +
+  xlab("drooglegging (m)")+
+  ylab("oppervlak (x25 m2)")+
+  guides(color = "none", fill = guide_legend("slootbreedte (m)"))
+ggsave(filename = paste0("hist_drglg_vn_brp_10P_slbt.jpeg"), width = 40, height = 45, unit = "cm")
+
+#drooglegging gekleurd op klei/os
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = drlg, fill = var_klei), binwidth=0.1, color="black")+
+  scale_fill_manual(values = filcol(length(breakvar_oklei)-1),na.value="white", drop = TRUE, name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +
+  xlab("drooglegging (m)")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("kleigehalte"))
+ggsave(filename = paste0("hist_drglg_vn_brp_10P_klei.jpeg"), width = 40, height = 45, unit = "cm")
+
+ggplot() +
+  # ggspatial::annotation_map_tile(type = "cartolight",zoom = 12) + 
+  # geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_spatraster(data = drglg_vn_klein, show.legend = TRUE, aes(fill = drlg)) +
+  scale_fill_hypso_tint_c(palette = "dem_print", values = c(0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,1.5,2), n.breaks = 15) +
+  # geom_sf(data = kr_loc, aes(), col = 'black', fill = 'black', size = 10) +
+  # geom_sf_text(data = kr_loc, aes(label = locatie), size = 18, nudge_y = 800) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("drooglegging (m)"))
+
+grad_hypso <- hypso.colors2(20, "dem_print")
+ggplot() +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = wens, show.legend = TRUE, aes(fill = drlg), col = NA) +
+  scale_fill_gradientn(colours = grad_hypso, values = c(0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1,1.5,2), n.breaks = 15, na.value = "white") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("drooglegging (m)"))
+# nog best veel negatieve drooglegging
+ggsave(filename = paste0("drooglegging_brp_50P.jpeg"), width = 60, height = 65, unit = "cm")
+
+# breedte sloten -------------------
+# obv watervlakken per deelgebied union (meer 1 vlakken per gebied)
+ggplot() +
+  geom_histogram(data = wvslot, aes(x = breedte), binwidth=0.5, color="black", fill="white")+
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("breedte waterlopen")+
+  ylab("aantal waterlopen")+
+  guides(color = "none", fill = guide_legend("breedte sloten (m)"))
+ggsave(filename = paste0("hist_slootbreedte_union.jpeg"), width = 40, height = 45, unit = "cm")
+
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs[no_gb_vn_gs$breedtewl < 15,], aes(x = breedtewl, fill = var_perbr), binwidth=0.5, color="black")+
+  scale_fill_manual(values = filcol(length(breakvar_afwat)-1), na.value="white", drop = TRUE, name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("breedte waterlopen")+
+  ylab("aantal stroomgebieden")+
+  guides(color = "none", fill = guide_legend("breedte percelen (m)"))
+ggsave(filename = paste0("hist_slootbreedte_union_brper.jpeg"), width = 40, height = 45, unit = "cm")
+
+nc <- 15 # desired number of categories
+# maximale slootbreedte voor visualisatie is 15 omdat anders een paar outliers het beeld bepalen
+wvslot <- wvslot[wvslot$breedte < 15,]
+breakvar <-  pretty(wvslot$breedte, n = nc) # make pretty intervals
+labelvar <-  paste0(breakvar[1:(length(breakvar)-1)], "-", breakvar[2:length(breakvar)])
+setDT(wvslot)
+wvslot[, var_cut := cut(breedte, n = length(breakvar)-1, breaks = breakvar, label = labelvar)]
+wvslot <- st_as_sf(wvslot[!is.na(wvslot$var_cut),])
+wvslot <- wvslot[grsrt[grsrt$OMSCHRIJVI == 'Veen',],]
+
+filcol <- colorRampPalette(brewer.pal(11, 'Spectral'))
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = wvslot, aes(fill = var_cut, col = var_cut)) +
+  scale_fill_manual(values = filcol(length(breakvar)-1), 
+                      na.value="white", 
+                      drop = TRUE, # don't drop unused levels
+                      name = "") +
+  scale_colour_manual(values = filcol(length(breakvar)-1), 
+                      na.value="white", 
+                      ) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(color = "none", fill = guide_legend("breedte sloten (m)"))
+
+ggsave(filename = paste0("slootbreedte.jpeg"), width = 60, height = 65, unit = "cm")
+
+
+
+# oppervlakte open water----------
+# n gebieden geeft ander (meer normaal verdeeld) beeld van verdeling
+setDT(no_gb_vn_gs)
+no_gb_vn_gs <- no_gb_vn_gs[!is.na(no_gb_vn_gs$frac_water) & no_gb_vn_gs$frac_water < 0.4,]
+breakvar <-  pretty(no_gb_vn_gs$frac_water, n = 10) # make pretty intervals
+labelvar <-  paste0(breakvar[1:(length(breakvar)-1)], "-", breakvar[2:length(breakvar)])
+no_gb_vn_gs[, var_cut := cut(frac_water, n = length(breakvar)-1, breaks = breakvar, label = labelvar)]
+no_gb_vn_gs <- st_as_sf(no_gb_vn_gs)
+# gb_vn_gs$geom_type <- st_geometry_type(gb_vn_gs)
+# st_write(gb_vn_gs , paste0(nmi_proj,'NL/gb_vn_gs_check.gpkg'))
+
+#versus breedte percelen
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = frac_water, fill= factor(var_perbr)), binwidth=0.01, color="black" )+
+  scale_fill_manual(values = filcol(length(breakvar_afwat)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("oppervlaktefractie waterlopen")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("breedte percelen"))
+ggsave(filename = paste0("hist_fractie_waterlopen_perceelbreedte.jpeg"), width = 40, height = 45, unit = "cm")
+
+#versus breedte waterlopen
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = frac_water, fill= factor(var_slbr)), binwidth=0.01, color="black" )+
+  scale_fill_manual(values = filcol(length(breakvar_slootbr)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("oppervlaktefractie waterlopen")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("breedte waterlopen"))
+ggsave(filename = paste0("hist_fractie_waterlopen_waterlopenbreedte.jpeg"), width = 40, height = 45, unit = "cm")
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = no_gb_vn_gs[!is.na(no_gb_vn_gs$var_cut),], aes(fill = var_cut, col = var_cut)) +
+  scale_fill_manual(values = filcol(length(breakvar)-1),
+  na.value="white",
+  drop = TRUE, # don't drop unused levels
+  name = "") +
+  scale_colour_manual(values = filcol(length(breakvar)-1), 
+                      na.value="white", 
+                      ) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0),
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18), # left-align
+          legend.position="right") +  
+  guides(color = "none", fill = guide_legend("fractie open water"))
+ggsave(filename = paste0("openwater_waterlopen_projperceel.jpeg"), width = 60, height = 65, unit = "cm")
+
+
+# afwateringsoppl, indicator breedte perceel----------
+# deze moet na merge gelijk zijn als zonder merge, check!
+# versus drooglegging
+
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = afwatopp, fill = var_klei), binwidth=0.5)+
+  scale_fill_manual(values = filcol(length(breakvar_klei)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("oppervlak/ natte omtrek percelen")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("kleigehalte"))
+ggsave(filename = paste0("hist_opp_omtrek_percelen_klei.jpeg"), width = 40, height = 45, unit = "cm")
+
+# versus breedte sloot,
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = afwatopp, fill = var_slbr), binwidth=0.5)+
+  scale_fill_manual(values = filcol(length(breakvar_slootbr)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("oppervlak/ natte omtrek percelen")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("breedte waterlopen"))
+ggsave(filename = paste0("hist_opp_omtrek_percelen_brwatlop.jpeg"), width = 40, height = 45, unit = "cm")
+
+# versus fractie open water
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = afwatopp, fill = var_opwat), binwidth=0.5)+
+  scale_fill_manual(values = filcol(length(breakvar_opwat)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("oppervlak/ natte omtrek percelen")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("fractie open water"))
+ggsave(filename = paste0("hist_opp_omtrek_percelen_fracwat.jpeg"), width = 40, height = 45, unit = "cm")
+
+# kaart
+
+ggplot() +
+  # ggspatial::annotation_map_tile(type = "cartolight",zoom = 12) + 
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = no_gb_vn_gs, aes(fill = var_perbr, col = var_perbr), color = NA) +
+  scale_fill_manual(values = filcol(length(breakvar_afwat)-1),
+  na.value="white",  drop = TRUE, name = "") +
+  scale_colour_manual(values = filcol(length(breakvar_afwat)-1),
+  na.value="white", name = "") +
+  # geom_sf(data = kr_loc, aes(), col = 'black', fill = 'black', size = 10) +
+  # geom_sf_text(data = kr_loc, aes(label = locatie), size = 18, nudge_y = 800) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("perceelsoppervlak/(natte omtrek/2)"))
+ggsave(filename = paste0("perceelsoppervlak_natteomtrek.jpeg"), width = 60, height = 65, unit = "cm")
+
+# afwateringsoppl natindicator combined----------
+#
+ggplot() +
+  geom_histogram(data = no_gb_vn_gs, aes(x = indafwater, fill = var_perbr), binwidth=0.1)+
+  scale_fill_manual(values = filcol(length(breakvar_afwat)-1),na.value="white", drop = TRUE,
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("nat (0)/ droog (1)")+
+  ylab("aantal lsw's")+
+  guides(fill = guide_legend("breedte percelen"))
+ggsave(filename = paste0("hist_indafwatering_percbte.jpeg"), width = 40, height = 45, unit = "cm")
+
+breakvar <-  pretty(no_gb_vn_gs$indafwater , n = 20) # make pretty intervals
+labelvar <-  paste0(breakvar[1:(length(breakvar)-1)], "-", breakvar[2:length(breakvar)])
+setDT(no_gb_vn_gs)
+no_gb_vn_gs[, var_cut := cut(indafwater, n = length(breakvar)-1, breaks = breakvar, label = labelvar)]
+no_gb_vn_gs <- st_as_sf(no_gb_vn_gs)
+filcol <- colorRampPalette(brewer.pal(10, 'Spectral'))
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = no_gb_vn_gs[!is.na(no_gb_vn_gs$var_cut),], aes(fill = var_cut, col = var_cut), color = NA) +
+  scale_fill_manual(values = filcol(length(breakvar)-1),
+  na.value="white",  drop = TRUE, name = "") +
+  scale_colour_manual(values = filcol(length(breakvar)-1),
+  na.value="white", name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("afwateringsindicator"))
+ggsave(filename = paste0("afwateringsindicator_combi.jpeg"), width = 60, height = 65, unit = "cm")
+
+
+# natte omtrek ----------
+ggplot() +
+  geom_density(data = no_gb_vn_gs, aes(x = natte_omtrek), fill="#FF6666", inherit.aes = FALSE)+
+  geom_histogram(data = no_gb_vn_gs, aes(x = natte_omtrek, fill= factor(var_cut2)), binwidth=0.01, color="black")+
+  scale_fill_manual(values = filcol(length(breakvarhist)-1),na.value="white", drop = TRUE, # don't drop unused levels
+  name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("natte / totale omtrek percelem")+
+  ylab("aantal percelen")+
+  guides(color = "none", fill = guide_legend("afwateringsbreedte"))
+ggsave(filename = paste0("hist_frac_natteomtrek.jpeg"), width = 40, height = 45, unit = "cm")
+
+
+breakvar <-  pretty(no$natte_omtrek, n = 10) # make pretty intervals
+labelvar <-  paste0(breakvar[1:(length(breakvar)-1)], "-", breakvar[2:length(breakvar)])
+setDT(no)
+no[, var_cut := cut(natte_omtrek, n = length(breakvar)-1, breaks = breakvar, label = labelvar)]
+no <- st_as_sf(no)
+filcol <- colorRampPalette(brewer.pal(10, 'Spectral'))
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = no, aes(fill = var_cut, col = var_cut), color = NA) +
+  scale_fill_manual(values = filcol(length(breakvar)-1),
+  na.value="white",  drop = FALSE, name = "") +
+  scale_colour_manual(values = filcol(length(breakvar)-1),
+  na.value="white", name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("fractie natte omtrek per perceel"))
+ggsave(filename = paste0("natteomtrek.jpeg"), width = 60, height = 65, unit = "cm")
+
+
+# veendikte -------
+# hist(vndk)
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'black', fill = NA) +
+  geom_spatraster(data = vndk, show.legend = TRUE, na.rm = TRUE, aes(fill = veendikte2014_ned)) +
+  scale_fill_hypso_tint_c(palette = "dem_print", values = c(0,0.5,1,2.5,5,10,15,20,30,40,50,100,150,200), n.breaks = 15) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("veendikte (cm)"))
+ggsave(filename = paste0("veendikte.jpeg"), width = 60, height = 65, unit = "cm")
+
+# trofie veen ------------
+ggplot() +
+  geom_histogram(data = trvn, aes(x = trofieklasse_veen), binwidth=0.5, color="black", fill="white")+
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("")+
+  ylab("oppervlak (x25 m2)")+
+  guides(color = "none", fill = guide_legend(""))
+ggsave(filename = paste0("hist_trofie_veen.jpeg"), width = 40, height = 45, unit = "cm")
+
+ftrvn <-as.factor(trvn)
+levels(ftrvn)<- trvn_lb
+droplevels(ftrvn, level=NULL, layer=1)
+mycolors <- colorRampPalette(brewer.pal(11, "Spectral"))(5)
+
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_spatraster(data = ftrvn, show.legend = TRUE, na.rm = TRUE, aes(fill = description)) +
+  scale_fill_manual(values= mycolors, name = "", na.value=NA, drop = TRUE, na.translate = FALSE) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("trofieklasse veen"))
+ggsave(filename = paste0("trofieklasse veen.jpeg"), width = 60, height = 65, unit = "cm")
+
+ggplot() +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = no_gb_vn_gs[!is.na(no_gb_vn_gs$trofie),], show.legend = TRUE, aes(fill = factor(trofie)), col = NA) +
+  scale_fill_manual(values= mycolors, labels = trvn_lb$description[trvn_lb$value >0], na.value=NA, drop = TRUE, na.translate = FALSE) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+          guides(fill = guide_legend("trofieklasse veen"))
+ggsave(filename = paste0("trofieklasseveen_brp.jpeg"), width = 60, height = 65, unit = "cm")
+
+
+# bofek -----------------
+ggplot() +
+  geom_bar(data = bofek, aes(x = bofek_cluster_2020), binwidth=0.5, color="black", fill="white")+
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("")+
+  ylab("oppervlak (x25 m2)")+
+  guides(color = "none", fill = guide_legend(""))
+ggsave(filename = paste0("hist_bofek.jpeg"), width = 40, height = 45, unit = "cm")
+
+fbofek <-as.factor(bofek)
+levels(fbofek)<- bofek_lb
+droplevels(fbofek, level=NULL, layer=1)
+
+mycolors <- colorRampPalette(brewer.pal(11, "Spectral"))(10)
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_spatraster(data = fbofek, show.legend = TRUE, na.rm = TRUE, aes(fill = description)) +
+  scale_fill_manual(values= rev(mycolors), name = "", na.value=NA, drop = TRUE, na.translate = FALSE) +
+  #   geom_sf(data = kr_loc, aes(), col = 'black', fill = 'black', size = 10) +
+  # geom_sf_text(data = kr_loc, aes(label = locatie), size = 18, nudge_y = 1200) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("bofek bodemtype", ncol =1))
+ggsave(filename = paste0("bofek_bodemtype_krimp.jpeg"), width = 60, height = 65, unit = "cm")
+
+# kwel ------------
+kwel <- clamp(kwel, lower = -3.5, upper = 4.5) #tov 25 meter rond sloten
+
+ggplot() +
+  geom_histogram(data = kwel, aes(x = `LHM4_1_Gemiddelde_kwel-inzijging_2011-2018_(mm_dag)_5G553SX`), binwidth=0.5, color="black", fill="white")+
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_text(size=16),
+          axis.text.x=element_text(size=16),
+          axis.ticks.x=element_line(),
+          axis.title.y=element_text(size=16),
+          axis.text.y=element_text(size=16),
+          axis.ticks.y=element_line(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=16),
+          legend.text=element_text(size=16)) +  
+  xlab("")+
+  ylab("oppervlak (x25 m2)")+
+  guides(color = "none", fill = guide_legend(""))
+ggsave(filename = paste0("hist_kwel.jpeg"), width = 40, height = 45, unit = "cm")
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_spatraster(data = kwel, show.legend = TRUE, na.rm = TRUE, 
+                  aes(fill = `LHM4_1_Gemiddelde_kwel-inzijging_2011-2018_(mm_dag)_5G553SX`)) +
+  scale_fill_whitebox_c(palette = "bl_yl_rd",  limits = c(-3,3), n.breaks = 20, direction = -1) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("wegzijging (-) kwel (+) (mm/dag)"))
+ggsave(filename = paste0("kwel.jpeg"), width = 60, height = 65, unit = "cm")
+
+# fractie grasland--------------
+hist(gras)
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'black', fill = NA) +
+  geom_spatraster(data = gras, show.legend = TRUE, na.rm = TRUE, aes(fill = brp2005_2022_category_fractiegrasland)) +
+  scale_fill_hypso_tint_c(palette = "dem_print", values = c(0,5,10,15,25,30,40,50,60,70,80,100,101), n.breaks = 15) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="right") +  
+  guides(fill = guide_legend("fractie grasland"))
+ggsave(filename = paste0("fractiegras.jpeg"), width = 60, height = 65, unit = "cm")
+
+
+# landgebruik --------
+no <- st_as_sf(no)
+filcol <- colorRampPalette(brewer.pal(9, 'Spectral'))
+
+no$gewas <- no$CAT_GEWASCATEGORIE
+no$gewas[no$CAT_GEWASCATEGORIE %in% 'Grasland'] <- no$GWS_GEWAS[no$CAT_GEWASCATEGORIE %in% 'Grasland']
+"Overige" -> no$gewas[no$gewas %in% c("Rand, grenzend aan blijvend grasland of een blijvende teelt, hoofdzakelijk bestaand uit blijvend gras", "Rand, grenzend aan bouwland, hoofdzakelijk bestaand uit tijdelijk gras", "Graszaad","Rand, grenzend aan bouwland, hoofdzakelijk bestaand uit blijvend gras","Rand, grenzend aan blijvend grasland of een blijvende teelt, hoofdzakelijk bestaand uit tijdelijk gras")]
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = no, aes(fill = gewas), color = NA) +
+  scale_fill_manual(values = filcol(length(unique(no$gewas))),
+  na.value="white",  drop = FALSE, name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="bottom",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("gewas"))
+ggsave(filename = paste0("brp_gewas.jpeg"), width = 60, height = 65, unit = "cm")
+
+# natuurbeheer ambitie en agrarische zoekgebieden-----------
+nbp_agr <- nbp_agr[nbp_agr$agrarisch_ == "A11",] # alleen weidevogels
+nbp_amb <- nbp_amb[grepl("^N13", nbp_amb$beheer_typ),] # alleen weidevogels
+# st_write(nbp_agr , paste0(nbp_agr,'NL/nbp_agr.gpkg')) 
+
+nbp_agr$toegestan0 <- as.factor(nbp_agr$toegestan0)
+nbp_amb$beheer_ty0 <- as.factor(nbp_amb$beheer_ty0)
+
+nbp_agr_vn <- nbp_agr[grsrt[grsrt$OMSCHRIJVI == "Veen",],]
+nbp_amb_vn <- nbp_amb[grsrt[grsrt$OMSCHRIJVI == "Veen",],]
+
+#selectie veenweidegebieden NL 
+# prov <- st_crop(prov,st_bbox(gb_vn_gs_union))
+# nbp_agr <- st_crop(nbp_agr,st_bbox(gb_vn_gs_union))
+# nbp_amb <- st_crop(nbp_amb,st_bbox(gb_vn_gs_union))
+
+#plot
+leg.txt <- c("Weidevogelgrasland en zoekgebieden (uit naturrbeheerplannen)", "Veen", "Weidevogelgrasland en zoekgebieden op veengrond",
+             "Waterschapsgrenzen", "Provinciale grenzen")
+
+ggplot() +
+  # ggspatial::annotation_map_tile(type = "cartolight",zoom = 5) + 
+  # geom_sf(data = wschp, aes(), col = 'blue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = grsrt[grsrt$OMSCHRIJVI == "Veen",], aes(), col = 'brown', fill = 'brown') +
+  geom_sf(data = nbp_agr, aes(), col = 'lightgreen', fill = 'lightgreen') +
+  geom_sf(data = nbp_agr_vn, aes(), col = 'darkgreen', fill = 'darkgreen') +
+  geom_sf(data = nbp_amb_vn, aes(), col = 'darkgreen', fill = 'darkgreen') +
+  scale_fill_manual(name = "Legenda", values = c("Weidevogelzoekgebieden (uit natuurbeheerplannen)"= "lightgreen","Veen"="brown","Weidevogelzoekgebieden op veengrond"="darkgreen"), guide = guide_legend(order = 1))+
+  scale_color_manual(values = c("Weidevogelzoekgebieden (uit natuurbeheerplannen)"= "lightgreen","Veen"="brown","Weidevogelzoekgebieden op veengrond"="darkgreen","Provinciale grenzen"="black"), guide = guide_legend(order = 2))+
+  # scale_alpha_manual(name=NULL, values=1) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="bottomright",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(guide_legend())
+ggsave(filename = paste0("weidevogel en veengebied2.jpeg"), width = 60, height = 65, unit = "cm")
+
+```
+
+De natte omtrek geeft een indicatie van het risico dat gemobiliseerde nutrienten (en gewasbeschermingsmiddelen) daadwerkelijk afspoelen.
+
+Het percentage open water is een indicatie in hoeverre afspoeling van land naar water de waterkwaliteit beïnvloed. Bij een kleine fractie open water heeft de uit- en afspoeling van water en stoffen van natuur- en landbouwpercelen relatief veel invloed. Bij een kleine fractie open water zal de stroomsnelheid sneller zijn bij een gelijkblijvende hoeveelheid inlaatwater, kweldruk en neerslagoverschot.
+
+De breedte van de sloot is een kenmerk die van grote invloed is op de verhouding tussen oeverlengte en open water en zal (samen met waterdiepte) daarmee de samenstelling van vegetatie beïnvloeden.
+
+# cluster analyse
+
+```{r cluster}
+# welke methode en waarom moet data geschaald?
+# clustmat <- no_gb_vn_gs[,c("ref_id.x", "afwatopp","breedtewl", "frac_water" , "drlg", "trofie" , "A_SOM_LOI" ,"A_CLAY_MI"  )]
+
+clustmat <- no_gb_vn_gs[,c("ref_id.x", "breedtewl", "frac_water", "drlg", "trofie" , "A_SOM_LOI" ,"A_CLAY_MI" )]
+# clustmat <- no_gb_vn_gs[,c("ref_id.x", "indafwater", "drlg", "trofie" , "A_SOM_LOI" ,"A_CLAY_MI" )]
+
+# clustmat$GWS_GEWASCODE <- as.numeric(clustmat$GWS_GEWASCODE)
+clustmat <- st_drop_geometry(clustmat)
+setDT(clustmat)
+clustmat <- clustmat[complete.cases(clustmat)]
+pairs(clustmat[,2:8])
+
+clustmat_s <- clustmat
+NULL -> clustmat_s[,c("ref_id.x")]
+clustmat_s <- scale(clustmat_s)
+cl <- kmeans(clustmat_s, 8)
+# Within cluster sum of squares by cluster:
+round(cl$betweenss / cl$totss,4) * 100
+
+
+plot(clustmat[,2:8], col = cl$cluster)
+# fviz_cluster(cl, clustmat_s) 
+
+# library(factoextra)
+clustmat <- cbind(clustmat, cl$cluster)
+clustmat_s <- cbind(clustmat_s, cl$cluster, clustmat$ref_id.x)
+setDT(clustmat)
+
+# maak nieuwe clusters gesorteerd op mediane drooglegging
+clustmat <- clustmat[,median_drlg:= median(drlg), by='V2']
+setorder(clustmat, cols = "median_drlg") 
+map <- unique(clustmat$V2)
+map <- as.data.table(cbind(map, seq(1:8)))
+clustmat <- clustmat[map, clusters := V2, on = c(V2 = "map")]
+clustmat <- clustmat[trvn_lb[2:5], trofie_chr := description, on = c(trofie = "value")]
+
+# melt data table voor boxplots
+melt <- melt(setDT(clustmat), id.vars = c("clusters"), 
+              measure.vars = c( "drlg", "breedtewl", "frac_water" ,"trofie" , "A_SOM_LOI","A_CLAY_MI" ))
+melt$clusters <- as.factor(melt$clusters)
+melt <- melt[!(melt$variable == "breedtewl" & melt$value > 20),]
+namenind <- c("drooglegging", "slootbreedte", 
+              "fractie oppervlak waterlopen", "trofiegraad veen","organische stof %","klei %")
+melt[, level := factor(variable, labels = namenind)]
+setDT(melt)
+d1 <-  melt[,.(percentiel25 = quantile(value, probs =c(0.25), na.rm = TRUE, digits = 2),mediaan = quantile(value, probs =c(0.5), na.rm = TRUE, digits = 2),percentiel75 = quantile(value, probs =c(0.75), na.rm =TRUE, digits = 2)), by = c('clusters','variable','level')]
+d1<- dcast(d1,clusters ~ variable, value.var = c('percentiel25','mediaan','percentiel75'), fun.aggregate = mean)
+ 
+p<- melt %>% 
+  ggplot(aes(x= clusters, y= value))+
+    geom_boxplot() +
+    coord_flip()+
+    facet_wrap(~level, scales = "free")+
+    theme_minimal()+
+    theme(
+      strip.background = element_blank(),
+      strip.text.x = element_text(size = 10), 
+      strip.text.y = element_text(size = 10), 
+      axis.text.x = element_text(size = 10,angle=90,hjust=1),
+      axis.text.y = element_text(size = 10),
+      axis.ticks =  element_line(colour = "black"),
+      panel.background = element_blank(),
+      plot.background = element_blank(),
+      legend.position="none"
+    )+
+ guides(fill="none")+
+    ggtitle('') +
+    #guides(col = '') +
+    labs(x= '' , y= '')
+ggplotly(p)
+
+
+#kaartweergave
+clust <- merge(no_gb_vn_gs, clustmat[,c('clusters', 'ref_id.x')], by = 'ref_id.x', all.x = TRUE)
+st_as_sf(clust)
+
+st_write(clust , paste0(nmi_proj,'clusters_versie20240318.gpkg')) #1904
+clust <- clust[clust$clusters %in% c(1,2,3,4,5,6),]
+filcol <- colorRampPalette(brewer.pal(10, 'Spectral'))
+clust$clusters <- as.factor(clust$clusters)
+
+ggplot() +
+  geom_sf(data = vnwschp, aes(), col = 'lightblue', fill = NA) +
+  geom_sf(data = prov, aes(), col = 'black', fill = NA) +
+  geom_sf(data = clust, aes(fill = clusters), color = NA) +
+  scale_fill_manual(values = rev(filcol(8)),
+  na.value="white",  drop = FALSE, name = "") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+          panel.background = element_rect(fill = 'white'),  ## azure
+          axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          plot.title = element_text(hjust = 0), # left-align
+          legend.position="bottom",
+          legend.title=element_text(size=20),
+          legend.text=element_text(size=18)) +  
+  guides(fill = guide_legend("clusters"))
+ggsave(filename = paste0("kaart_cluster_1_6.jpeg"), width = 60, height = 65, unit = "cm")
+
+
+
+```
+
+```{r}
+setDT(wvslot)
+setDT(clust)
+breedtewl_clust <- merge(wvslot, clust, by = 'id_lsw', allow.cartesian = TRUE)
+
+```
+
+```{r connect parcels 2 clusters}
+aan_drglg_peil <- st_read(paste0(nmi_proj, "peilgebieden/Peil_maaivel_drooglegging_veenpercelen.gpkg")) 
+clust_aan_drglg_peil <- st_join(st_buffer(clust, 0), aan_drglg_peil,
+               join = st_intersects,
+               largest = TRUE, 
+               left = TRUE)
+st_write(clust_aan_drglg_peil , paste0(nmi_proj,'clust_aan_drglg_peil.gpkg'))
+clust_aan_drglg_peil$drooglegging_m <- clust_aan_drglg_peil$drlg
+clust_aan_drglg_peil$id_gebied <- clust_aan_drglg_peil$id_lsw
+clust_aan_drglg_peil$gewas <- clust_aan_drglg_peil$GWS_GEWAS
+clust_aan_drglg_peil <- merge(clust_aan_drglg_peil, trvn_lb, by.x = 'trofie', by.y = 'value')
+clust_aan_drglg_peil$trofie_veen <- clust_aan_drglg_peil$description
+clust_aan_drglg_peil$fractie_open_water <- clust_aan_drglg_peil$frac_water
+clust_aan_drglg_peil$breedte_waterloop_gebied <- clust_aan_drglg_peil$breedtewl
+clust_aan_drglg_peil$Zomerdrooglegging_m_NOBV <- clust_aan_drglg_peil$Maaiveld_niveau_m_NAP-clust_aan_drglg_peil$Zomerpeil_m_NAP
+clust_aan_drglg_peil$Winterdrooglegging_m_NOBV <- clust_aan_drglg_peil$Maaiveld_niveau_m_NAP-clust_aan_drglg_peil$Winterpeil_m_NAP
+clust_sel <- clust_aan_drglg_peil[,c('id_gebied','AAN_ID','gewas','natte_omtrek','breedte_waterloop_gebied','fractie_open_water','drooglegging_m', 'Zomerdrooglegging_m_NOBV','Winterdrooglegging_m_NOBV','trofie_veen','clusters','Sloot_afstand_m','Zomerpeil_m_NAP','Winterpeil_m_NAP','Maaiveld_niveau_m_NAP','Datum_inwerkingpeil','Type_peilbeheer')]
+st_write(clust_sel , paste0(nmi_proj,'clust_aan_drglg_peil.gpkg'))
+```
+
+
+Alles naar rasters. Dus ook lsw laag met slootkenmerken en hydrologie.
+Rasterstack en dan kmeans?
