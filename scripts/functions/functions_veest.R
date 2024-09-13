@@ -142,7 +142,6 @@ calc_taludhoek <- function(profiel_nr){
   first_point <- first_point[Puntnummer == min(Puntnummer)]
   last_point <- dt1[sectie == 'water']
   last_point <- last_point[Puntnummer == min(Puntnummer)]
-  
   # calc angle
   tldk_bvwtr_perc_1 <-  100*(first_point$z-last_point$z) / (last_point$dist-first_point$dist)
   tldk_bvwtr_graden_1 <-  atan((first_point$z-last_point$z) / (last_point$dist-first_point$dist))*(180/pi)
@@ -153,7 +152,6 @@ calc_taludhoek <- function(profiel_nr){
   first_point <- first_point[Puntnummer == max(Puntnummer)]  
   last_point <- dt1[sectie == 'water']
   last_point <- last_point[Puntnummer == max(Puntnummer)] 
-    
   # calc angle
   tldk_bvwtr_perc_2 <-  100*(first_point$z-last_point$z) / (first_point$dist-last_point$dist)
   tldk_bvwtr_graden_2 <-  atan((first_point$z-last_point$z) / (first_point$dist-last_point$dist))*(180/pi)
@@ -164,7 +162,6 @@ calc_taludhoek <- function(profiel_nr){
   last_point <- dt1[sectie == 'water' & dist - first_point$dist < 0.5]
   # selecteer een locatie minder dan 50 cm verder dan de waterlijn
   last_point <- last_point[Puntnummer == max(Puntnummer)] 
-  
   # calc angle bovenkant slib
   tldk_ondwtr_perc_1 <-  100*(first_point$z-last_point$z) / (last_point$dist-first_point$dist)
   tldk_ondwtr_graden_1 <-  atan((first_point$z-last_point$z) / (last_point$dist-first_point$dist))*(180/pi) 
@@ -211,26 +208,30 @@ calc_taludhoek <- function(profiel_nr){
   return(talud)
 
 }
+
+
   
     
 # Visualise profielen-------------------------------------------------------------
 visualise_profiel<- function(proftest){
   proftest <- profiel[ID == i,]
   setDT(proftest)
+  proftest <- proftest[sectie %in% c('oever','water')]
   
   zmin <- min(proftest$z-proftest$slib)
-  maxdist_x <- ceiling(max(proftest$dist))
-  maxdist_y <- ceiling(max(proftest$z) - min(proftest$z))
-  maxdist <- max(maxdist_x,maxdist_y)
+  # maxdist_x <- ceiling(max(proftest$midpoint_dist[proftest$sectie == 'oever']))
+  # maxdist_y <- ceiling(max(proftest$z) - min(proftest$z))
+  # maxdist <- max(maxdist_x,maxdist_y)
   
   ggplot() +
-    geom_line(data = proftest, aes(x = dist, y = z)) + 
-    geom_ribbon(data=proftest, aes(x= dist,ymin=zmin, ymax=z-slib), fill = 'lightgreen', alpha =0.5)+
-    geom_line(data = proftest, aes(x = dist, y = z-slib)) + 
-    geom_ribbon(data=proftest, aes(x= dist,ymin=z-slib, ymax=z), fill = 'brown', alpha =0.5)+
-    geom_line(data = proftest, aes(x = dist, y = wl)) + 
-    geom_ribbon(data=proftest, aes(x= dist,ymin=z, ymax=wl), fill = 'lightblue', alpha =0.5)+
+    geom_line(data = proftest, aes(x = midpoint_dist, y = z)) +
+    geom_ribbon(data=proftest, aes(x= midpoint_dist,ymin=zmin, ymax=z-slib), fill = 'lightgreen', alpha =0.5)+
+    geom_line(data = proftest, aes(x = midpoint_dist, y = z-slib)) +
+    geom_ribbon(data=proftest, aes(x= midpoint_dist,ymin=z-slib, ymax=z), fill = 'brown', alpha =0.5)+
+    geom_line(data = proftest[!is.na(wl),], aes(x = midpoint_dist, y = wl)) + 
+    geom_ribbon(data=proftest[!is.na(wl),], aes(x= midpoint_dist, ymin=z, ymax=wl), fill = 'lightblue', alpha =0.5)+
     coord_fixed(ratio = 1)+
+    # annotate('text', x = -4, y = -0.3,label = proftest$azimuth) +
     theme_minimal()+
     theme(
       strip.background = element_blank(),
@@ -243,7 +244,7 @@ visualise_profiel<- function(proftest){
       panel.background = element_blank(),
       plot.background = element_blank(),
     )+
-    ggtitle(paste0("Dwarsprofiel perceel en sloot op locatie ",proftest$name)) +
+    ggtitle(paste0("Dwarsprofiel oever en sloot op locatie ",proftest$name)) +
     labs(x= "afstand in meters",y="diepte in mNAP")
   ggsave(file=paste0('output/profielen/',proftest$name,"_",proftest$ID,'.png'),width = 40,height = 15,units='cm',dpi=1000)
   
