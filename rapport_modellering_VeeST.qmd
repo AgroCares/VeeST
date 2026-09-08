@@ -97,18 +97,16 @@ kable(targets_tbl)
 **Redox genormaliseerd voor pH7**: De formule stamt uit de Nernst-vergelijking. De redoxpotentiaal (Eh) is pH-afhankelijk omdat bij veel redoxreacties in de bodem waterstofionen (H⁺) betrokken zijn. Per pH-eenheid stijging daalt Eh met ~59 mV (bij 25°C). Door te normaliseren naar pH 7 worden metingen van locaties met verschillende pH vergelijkbaar:
 
 $$Eh_7 = Eh_{\text{gemeten}} + (7 - pH_{\text{gemeten}}) \times 59$$
-
 **FeP-verhouding**: is berekend als molverhoudingen
 
 **Kengetallen op basis van profielen**:
 - **Drooglegging oever en perceel**: zowel het hoogste punt op de oever als het maaiveld minus jaarrondstreefpeil (NHI)
 - **Zomerdrooglegging**: maaiveld minus zomerpeil (NOBV)
-- **Taludhoek boven water rond de waterlijn**: tan⁻¹(hoogteverschil oever op 35 cm verticale afstand boven de waterlijn en waterlijn / horizontale afstand).
+- **Taludhoek boven water rond de waterlijn**: tan⁻¹(hoogteverschil oever en waterlijn / horizontale afstand), waarbij van alle oeverpunten die minder dan 35 cm boven de waterlijn liggen het punt wordt genomen dat het verst van de waterlijn af ligt, met de insteek als maximale grens.
 - **Taludhoek onder water rond de waterlijn**: tan⁻¹(hoogteverschil bovenkant slib op 35 cm verticale afstand onder de waterlijn en waterlijn / horizontale afstand).
-- **Taludhoek boven water**: tan⁻¹(hoogteverschil oever op 3 meter horizontale afstand van de waterlijn en waterlijn / horizontale afstand). Als de oever minder breed is dan 3 meter dan wordt het oeverpunt dat het verst van de waterlijn ligt genomen.
+- **Taludhoek boven water**: tan⁻¹(hoogteverschil oever op 3 meter horizontale afstand van de waterlijn en waterlijn / horizontale afstand). Als de oever minder breed is dan 3 meter dan wordt het oeverpunt dat het verst van de waterlijn ligt genomen, met de insteek als maximale grens.
 - **Taludhoek onder water**: tan⁻¹(hoogteverschil bovenkant slib op 1 meter horizontale afstand van de waterlijn en waterlijn / horizontale afstand). 
 - **Breedte oeverzone**: breedte van de zone van insteek tot waterlijn.
-
 
 **Proxies voor draagkracht van de oever en het perceel**: 
 - check berekening draagkracht op basis van de formule van Van den Akker (2004) met een functie van het organisch stofgehalte, kleigehalte en CEC. 

@@ -22,22 +22,27 @@ source(paste0("scripts/functions/functions_veest.R"))
 
 # 1. Load hulpdata -------------------------------------------------
 ## 1.1 clusters ---------------------------------------
-cluster <- read_sf(paste0(workspace,"./GIS/clusters_versie20240318.gpkg"))
-cluster <- st_as_sf(cluster)
 aan <- read_sf(paste0(workspace,"./GIS/AAN_niveau3b.shp"))
 aan_drglg_peil <- st_read(paste0(workspace,"./GIS/Peil_maaivel_drooglegging_veenpercelen.gpkg")) 
 aan_drglg_peil$Zomerdrooglegging_m_NOBV <- aan_drglg_peil$Maaiveld_niveau_m_NAP-aan_drglg_peil$Zomerpeil_m_NAP
-cluster <- st_join(st_buffer(cluster, 0), aan_drglg_peil,
-               join = st_intersects,
-               largest = TRUE, 
-               left = TRUE)
+
+# cluster <- read_sf(paste0(workspace,"./GIS/clusters_versie20240318.gpkg"))
+# cluster <- st_as_sf(cluster)
+# cluster <- st_join(st_buffer(cluster, 0), aan_drglg_peil,
+#                join = st_intersects,
+#                largest = TRUE, 
+#                left = TRUE)
+# plot(clust_aan_drglg_peil$drlg, clust_aan_drglg_peil$Maaiveld_niveau_m_NAP-clust_aan_drglg_peil$Zomerpeil_m_NAP)
+# cluster <- st_as_sf(cluster)
+# write_sf(cluster, paste0(workspace,'GIS/clusters_aan_drglg_peil.gpkg'), append = FALSE)
+cluster <- read_sf(paste0(workspace,"./GIS/clusters_aan_drglg_peil.gpkg"))
+cluster <- st_as_sf(cluster)
+
 setDT(cluster)
 cols_clus <- c('drlg','breedtewl','trofie',"A_SOM_LOI" ,"A_CLAY_MI","Zomerpeil_m_NAP","Maaiveld_niveau_m_NAP","Zomerdrooglegging_m_NOBV")
 cluster.med <- cluster[,lapply(.SD,median,na.rm=TRUE),.SDcols=cols_clus, by = 'clusters']
 setnames(cluster.med, c('clusters','drlg','breedtewl','trofie',"A_SOM_LOI" ,"A_CLAY_MI","Zomerpeil_m_NAP","Maaiveld_niveau_m_NAP","Zomerdrooglegging_m_NOBV"),
          c('clusters','drglg','watbte','trofie',"OS_perc_OR_25" ,"Z_CLAY_SA_OR_25","Zomerpeil_m_NAP","Maaiveld_niveau_m_NAP","Zomerdrooglegging_m_NOBV"))
-# plot(clust_aan_drglg_peil$drlg, clust_aan_drglg_peil$Maaiveld_niveau_m_NAP-clust_aan_drglg_peil$Zomerpeil_m_NAP)
-cluster <- st_as_sf(cluster)
 
 ## 1.2 load was/ wordt locaties-----------------------------------------
 locaties <- readxl::read_excel(paste0(workspace2, 'analysePlan/wp_locaties_naam_correcties.xlsx'), sheet = 'locaties')
@@ -52,6 +57,7 @@ locaties <- st_as_sf(locaties, wkt = "geom", crs = 4326)
 locaties <- st_as_sf(locaties) %>% st_transform(crs = 28992)
 
 ## 1.3 create cluster per loc data---------------------------
+cluster <- st_as_sf(cluster)
 clusters_locs <- st_join(locaties[!is.na(locaties$instanceID_veg) & !is.na(locaties$instanceID_abio) & !locaties$WP %in% 'WP2-prenul',], cluster, st_nearest_feature, left = TRUE)
 # sel verschillende indicatoren
 # afwatopp: oppvl/ (omtrek_nat/ 2) brede percelen met weinig sloten is een hoog getal, smalle percelen met veel sloten is laag
@@ -681,12 +687,13 @@ slootID_penetrometerID <- dcast(penmerge, SlootID+name_gps+oever+jaar~dist_id) #
 ## 3.1 import ----------------------------------------------------------
 inputdir <- paste0(workspace,"./ODK_abiotiek")
 abio <- fread(paste0(inputdir,'/VeeST_Veldform Abiotiek_v5_results_251104.csv'), dec = ',', na.strings = c(999,9999,-999,-99,'999,0','999,00','999,000','NA','999','999,0000'))
-abio2 <- fread("C:/Users/LauraMoria/NMI/NMI - Gedeelde documenten/Projecten/O 1900 - O 2000/1922.N.23 VeeST vwsloot vd toekomst/05. Data/./ODK_abiotiek/VeeST_Veldform Abiotiek_v5_results_251104.csv" , dec = ',', na.strings = c(999,9999,-999,-99,'999,0','999,00','999,000','NA','999','999,0000'))
+abio2 <- fread(paste0(inputdir,'/VeeST_Veldform Abiotiek_v5_260901.csv'), sep = ',', dec = '.', na.strings = c(999,9999,-999,-99,'999.0','999.00','999.000','NA','999','999.0000'))
 abio_cols <- fread(paste0(workspace,"./hulp_tabellen/veest_kolomnamen.csv"), dec = ',')
 setnames(abio, abio_cols$nieuwe_kolomnamen, abio_cols$oude_kolomnamen, skip_absent = TRUE)
 setnames(abio2, abio_cols$nieuwe_kolomnamen, abio_cols$oude_kolomnamen, skip_absent = TRUE)
-abio <- rbind(abio,abio2, fill=TRUE)
-abio[, datum := as.Date(Datemanual) ]
+abio <- rbind(abio, abio2, fill = TRUE)
+abio <- unique(abio, by = "instanceID")  # verwijder echte duplicaten
+abio[, datum := as.Date(Date_start_auto) ]
 abio[, jaar:= year(datum)]
 # remove columns without information
 cols <- colnames(abio)[unlist(abio[,lapply(.SD,function(x) sum(is.na(x))==nrow(abio))])]
@@ -833,7 +840,18 @@ profiel[,max_slib := max(slib, na.rm = T), by = 'ID']
 # breedte water
 profiel[, watbte := dist[Puntnummer == numwl_max]-dist[Puntnummer == numwl_min], by ='ID']
 # breedte oever
-profiel[, oevbte := dist[Puntnummer == numwl_min]-dist[Puntnummer == min(Puntnummer[sectie == 'oever'])], by =c ('ID','sectie_2')]
+# NA_real_ wanneer de sectie_2-groep geen enkel oeverpunt bevat (voorkomt
+# lengte-0 argumenten in fifelse()), of wanneer sectie_2 zelf NA is (bv.
+# doordat dist/midpoint niet berekend kon worden, zie Puntnummer==1 check)
+profiel[, oevbte := {
+  if(is.na(sectie_2[1])){
+    NA_real_
+  } else if(sectie_2[1] == 1){
+    if(any(sectie == 'oever')) dist[Puntnummer == numwl_min] - dist[Puntnummer == min(Puntnummer[sectie == 'oever'])] else NA_real_
+  } else {
+    if(any(sectie == 'oever')) dist[Puntnummer == max(Puntnummer[sectie == 'oever'])] - dist[Puntnummer == numwl_max] else NA_real_
+  }
+}, by = c('ID','sectie_2')]
 
 ### 6.2.2a correct sectie -------------------------------------
 profiel[name == 'IG_10_WP1' & Puntnummer > 31 & jaar == 2025, sectie := 'perceel']

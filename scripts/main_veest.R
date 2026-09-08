@@ -176,122 +176,6 @@ abio_proj[, .(
   median_koebelasting = median(koebelasting_drinkende_koeien, na.rm = TRUE)
 ), by = .(afrastering_flag, drinken_flag)][order(afrastering_flag, drinken_flag)]
 
-## indices berekenen -------------------------------
-# Hulpfunctie: rowMeans maar NA als alle waarden in een rij NA zijn
-rowMeans_na <- function(...) {
-  m <- cbind(...)
-  ifelse(rowSums(!is.na(m)) == 0, NA_real_, rowMeans(m, na.rm = TRUE))
-}
-
-# Kraggevorming vlag: groeiende oever als kraggen*breedte > 10 OF sluiting zone 2a én 2b > 90%
-abio_proj[, kraggevorming_flag := (
-  (fifelse(is.na(oeverzone_2b_kraggen_perc), 0, oeverzone_2b_kraggen_perc) * fifelse(is.na(oeverzone_2b_breedte_cm), 0, oeverzone_2b_breedte_cm) +
-   fifelse(is.na(oeverzone_2a_kraggen_perc), 0, oeverzone_2a_kraggen_perc) * fifelse(is.na(oeverzone_2a_breedte_cm), 0, oeverzone_2a_breedte_cm)) > 10 |
-  (fifelse(is.na(oeverzone_2a_emers_perc), 0, oeverzone_2a_emers_perc) > 90 &
-   fifelse(is.na(oeverzone_2b_emers_perc), 0, oeverzone_2b_emers_perc) > 90)
-)]
-
-# Erosieindex: hoog = meer erosie
-# Componenten: afscheur (hoog = meer erosie), onderholling (hoog = meer erosie),
-#   kraggevorming (groeiende oever = minder erosie, verlaagt index),
-#   kale oever (hoog = meer erosie)
-# Alle componenten genormaliseerd naar 0-1 schaal (percentages gedeeld door 100)
-abio_proj[, erosieindex := {
-  afscheur_norm   <- fifelse(is.na(afscheur_veg_lengte_perc), NA_real_, afscheur_veg_lengte_perc / 100)
-  # Onderholling: cm, normaliseer op max 150 cm (gecorrigeerde waarde) en cap op 1
-  onderholling_norm <- fifelse(is.na(holleoever), NA_real_, pmin(holleoever / 150, 1))
-  # Kraggevorming verlaagt index: 1 als geen kraggevorming, 0 als kraggevorming
-  kragg_factor    <- fifelse(is.na(kraggevorming_flag), 1, fifelse(kraggevorming_flag, 0, 1))
-  kaal_norm       <- fifelse(is.na(oeverzone_2b_kaal_perc), NA_real_, oeverzone_2b_kaal_perc / 100)
-  rowMeans_na(afscheur_norm, onderholling_norm, kaal_norm) * kragg_factor
-}]
-
-# Oevervormindex: geometrie oever
-# Flauwer talud (lage taludhoek rond waterlijn) = hogere index
-# Grilliger oeverlijn (oeverzone_2b_grillig) = hogere index
-# tldk_oevrwtr_perc: hoek rand waterlijn als % (lager = flauwer = beter)
-abio_proj[, oevervormindex := {
-  # Inverteer taludhoek: flauwe helling = hoge score
-  talud_boven_norm <- fifelse(is.na(tldk_oevrwtr_perc), NA_real_, 1 - pmin(tldk_oevrwtr_perc / 100, 1))
-  # Grilligheid: ordinale score (1-3 verwacht); normaliseer naar 0-1
-  grillig_norm     <- fifelse(is.na(oeverzone_2b_grillig), NA_real_,
-                              pmin((as.numeric(oeverzone_2b_grillig) - 1) / 2, 1))
-  rowMeans_na(talud_boven_norm, grillig_norm)
-}]
-
-# Stabiliteitsindex: hoog = stabielere oever
-# Componenten: sluiting emers zone 2a (hoog = stabiel), sluiting emers zone 2b,
-#   draagkracht oever (hoog = stabiel), breedte oeverzone (breder = stabieler),
-#   oevervormindex (flauwer/grilliger = stabieler)
-# Normalisaties op max van dataset worden vooraf berekend (buiten := blok)
-.dk_max      <- max(abio_proj$draagkracht_oever, na.rm = TRUE)
-.breedte_max <- max(
-  fifelse(is.na(abio_proj$oevbte), 0, abio_proj$oevbte * 100) +
-  fifelse(is.na(abio_proj$oeverzone_2b_breedte_cm), 0, abio_proj$oeverzone_2b_breedte_cm),
-  na.rm = TRUE
-)
-abio_proj[, stabiliteitsindex := {
-  emers_2a_norm <- fifelse(
-    is.na(oeverzone_2a_emers_perc) | is.na(oeverzone_2a_breedte_cm), NA_real_,
-    fifelse(oeverzone_2a_emers_perc > 90 & (oeverzone_2a_breedte_cm / 100) > 0.5, 1,
-            oeverzone_2a_emers_perc / 100)
-  )
-  emers_2b_norm <- fifelse(
-    is.na(oeverzone_2b_emers_perc) | is.na(oeverzone_2b_breedte_cm), NA_real_,
-    fifelse(oeverzone_2b_emers_perc > 90 & (oeverzone_2b_breedte_cm / 100) > 0.5, 1,
-            oeverzone_2b_emers_perc / 100)
-  )
-  dk_norm      <- fifelse(is.na(draagkracht_oever), NA_real_, draagkracht_oever / .dk_max)
-  breedte_norm <- (fifelse(is.na(oevbte), 0, oevbte * 100) +
-                   fifelse(is.na(oeverzone_2b_breedte_cm), 0, oeverzone_2b_breedte_cm)) / .breedte_max
-  rowMeans_na(emers_2a_norm, emers_2b_norm, dk_norm, breedte_norm, oevervormindex)
-}]
-rm(.dk_max, .breedte_max)
-
-### indices visualiseren ------------------------------------
-
-# Histogram met subtitle per facet als interpretatiehulp
-# Gebruik scale_x labs met subtitle-achtige aanpak via strip labels uitgebreid
-
-idx_long[, index_label := factor(index,
-  levels = c("erosieindex","oevervormindex","stabiliteitsindex"),
-  labels = c(
-    "Erosieindex\n← weinig erosie    veel erosie →",
-    "Oevervormindex\n← steil, recht    flauw, grillig →",
-    "Stabiliteitsindex\n← instabiel    stabiel →"
-  )
-)]
-
-p_hist <- ggplot(idx_long, aes(x = waarde)) +
-  geom_histogram(bins = 30, na.rm = TRUE) +
-  facet_wrap(~index_label, scales = "free_x") +
-  labs(x = NULL, y = "Aantal", title = "Verdeling indices") +
-  theme(strip.text = element_text(size = 9))
-
-p_hist
-
-
-idx_gebied <- melt(
-  abio_proj[, .(Gebiedsnaam, erosieindex, oevervormindex, stabiliteitsindex)],
-  id.vars = "Gebiedsnaam",
-  measure.vars = c("erosieindex","oevervormindex","stabiliteitsindex"),
-  variable.name = "index", value.name = "waarde"
-)
-idx_gebied[, index_label := factor(index,
-  levels = c("erosieindex","oevervormindex","stabiliteitsindex"),
-  labels = c("Erosieindex", "Oevervormindex", "Stabiliteitsindex")
-)]
-
-# Sorteer gebieden op mediaan erosieindex
-gebied_order <- abio_proj[, .(med = median(erosieindex, na.rm = TRUE)), by = Gebiedsnaam][order(med), Gebiedsnaam]
-idx_gebied[, Gebiedsnaam := factor(Gebiedsnaam, levels = gebied_order)]
-
-ggplot(idx_gebied, aes(x = waarde, y = Gebiedsnaam)) +
-  geom_boxplot(outlier.size = 1) +
-  facet_wrap(~index_label, scales = "free_x") +
-  labs(x = "Indexwaarde", y = NULL, title = "Indices per gebied") +
-  theme(axis.text.y = element_text(size = 14))
-
 ## add grouping vars -------------------------------
 abio_proj[text == "Hoogheemraadschap De Stichtse Rijnlanden",waterschap := 'HDSR']
 abio_proj[text == "Hoogheemraadschap Hollands Noorderkwartier" ,waterschap := 'HHNK']
@@ -374,6 +258,123 @@ abio_proj[, draagkracht_perceel := rowMeans(.SD, na.rm = TRUE),
           .SDcols = c("perceel_(10,20]", "perceel_(20,30]", "perceel_(30,40]", "perceel_(40,50]")]
 abio_proj[, draagkracht_insteek := rowMeans(.SD, na.rm = TRUE), 
           .SDcols = c("insteek_(10,20]", "insteek_(20,30]", "insteek_(30,40]", "insteek_(40,50]")]
+
+## indices berekenen -------------------------------
+# Hulpfunctie: rowMeans maar NA als alle waarden in een rij NA zijn
+rowMeans_na <- function(...) {
+  m <- cbind(...)
+  ifelse(rowSums(!is.na(m)) == 0, NA_real_, rowMeans(m, na.rm = TRUE))
+}
+
+# Kraggevorming vlag: groeiende oever als kraggen*breedte > 10 OF sluiting zone 2a én 2b > 90%
+abio_proj[, kraggevorming_flag := (
+  (fifelse(is.na(oeverzone_2b_kraggen_perc), 0, oeverzone_2b_kraggen_perc) * fifelse(is.na(oeverzone_2b_breedte_cm), 0, oeverzone_2b_breedte_cm) +
+   fifelse(is.na(oeverzone_2a_kraggen_perc), 0, oeverzone_2a_kraggen_perc) * fifelse(is.na(oeverzone_2a_breedte_cm), 0, oeverzone_2a_breedte_cm)) > 10 |
+  (fifelse(is.na(oeverzone_2a_emers_perc), 0, oeverzone_2a_emers_perc) > 90 &
+   fifelse(is.na(oeverzone_2b_emers_perc), 0, oeverzone_2b_emers_perc) > 90)
+)]
+
+# Erosieindex: hoog = meer erosie
+# Componenten: afscheur (hoog = meer erosie), onderholling (hoog = meer erosie),
+#   kraggevorming (groeiende oever = minder erosie, verlaagt index),
+#   kale oever (hoog = meer erosie)
+# Alle componenten genormaliseerd naar 0-1 schaal (percentages gedeeld door 100)
+abio_proj[, erosieindex := {
+  afscheur_norm     <- fifelse(is.na(afscheur_veg_lengte_perc), NA_real_, afscheur_veg_lengte_perc / 100)
+  # Onderholling: cm, normaliseer op max 150 cm (gecorrigeerde waarde) en cap op 1
+  onderholling_norm <- fifelse(is.na(holleoever), NA_real_, pmin(holleoever / 150, 1))
+  # Kraggevorming verlaagt index: 1 als geen kraggevorming, 0 als kraggevorming
+  kragg_factor      <- fifelse(is.na(kraggevorming_flag), 1, fifelse(kraggevorming_flag, 0, 1))
+  kaal_norm         <- fifelse(is.na(oeverzone_2b_kaal_perc), NA_real_, oeverzone_2b_kaal_perc / 100)
+  rowMeans_na(afscheur_norm, onderholling_norm, kaal_norm) * kragg_factor
+}]
+
+# Oevervormindex: geometrie oever
+# Flauwer talud (lage taludhoek rond waterlijn) = hogere index
+# Grilliger oeverlijn (oeverzone_2b_grillig) = hogere index
+# tldk_oevrwtr_perc: hoek rand waterlijn als % (lager = flauwer = beter)
+abio_proj[, oevervormindex := {
+  # Inverteer taludhoek: flauwe helling = hoge score
+  talud_boven_norm <- fifelse(is.na(tldk_oevrwtr_perc), NA_real_, 1 - pmin(tldk_oevrwtr_perc / 100, 1))
+  # Grilligheid: ordinale score (1-3 verwacht); normaliseer naar 0-1
+  grillig_norm     <- fifelse(is.na(oeverzone_2b_grillig), NA_real_,
+                              pmin((as.numeric(oeverzone_2b_grillig) - 1) / 2, 1))
+  rowMeans_na(talud_boven_norm, grillig_norm)
+}]
+
+# Stabiliteitsindex: hoog = stabielere oever
+# Componenten: sluiting emers zone 2a (hoog = stabiel), sluiting emers zone 2b,
+#   draagkracht oever (hoog = stabiel), breedte oeverzone (breder = stabieler),
+#   oevervormindex (flauwer/grilliger = stabieler)
+# Normalisaties op max van dataset worden vooraf berekend (buiten := blok)
+.dk_max      <- max(abio_proj$draagkracht_oever, na.rm = TRUE)
+.breedte_max <- max(
+  fifelse(is.na(abio_proj$oevbte), 0, abio_proj$oevbte * 100) +
+  fifelse(is.na(abio_proj$oeverzone_2b_breedte_cm), 0, abio_proj$oeverzone_2b_breedte_cm),
+  na.rm = TRUE
+)
+abio_proj[, stabiliteitsindex := {
+  emers_2a_norm <- fifelse(
+    is.na(oeverzone_2a_emers_perc) | is.na(oeverzone_2a_breedte_cm), NA_real_,
+    fifelse(oeverzone_2a_emers_perc > 90 & (oeverzone_2a_breedte_cm / 100) > 0.5, 1,
+            oeverzone_2a_emers_perc / 100)
+  )
+  emers_2b_norm <- fifelse(
+    is.na(oeverzone_2b_emers_perc) | is.na(oeverzone_2b_breedte_cm), NA_real_,
+    fifelse(oeverzone_2b_emers_perc > 90 & (oeverzone_2b_breedte_cm / 100) > 0.5, 1,
+            oeverzone_2b_emers_perc / 100)
+  )
+  dk_norm      <- fifelse(is.na(draagkracht_oever), NA_real_, draagkracht_oever / .dk_max)
+  breedte_norm <- (fifelse(is.na(oevbte), 0, oevbte * 100) +
+                   fifelse(is.na(oeverzone_2b_breedte_cm), 0, oeverzone_2b_breedte_cm)) / .breedte_max
+  rowMeans_na(emers_2a_norm, emers_2b_norm, dk_norm, breedte_norm, oevervormindex)
+}]
+rm(.dk_max, .breedte_max)
+
+### indices visualiseren ------------------------------------
+
+idx_long <- melt(
+  abio_proj[, .(erosieindex, oevervormindex, stabiliteitsindex)],
+  measure.vars = c("erosieindex","oevervormindex","stabiliteitsindex"),
+  variable.name = "index", value.name = "waarde"
+)
+idx_long[, index_label := factor(index,
+  levels = c("erosieindex","oevervormindex","stabiliteitsindex"),
+  labels = c(
+    "Erosieindex\n← weinig erosie    veel erosie →",
+    "Oevervormindex\n← steil, recht    flauw, grillig →",
+    "Stabiliteitsindex\n← instabiel    stabiel →"
+  )
+)]
+
+p_hist <- ggplot(idx_long, aes(x = waarde)) +
+  geom_histogram(bins = 30, na.rm = TRUE) +
+  facet_wrap(~index_label, scales = "free_x") +
+  labs(x = NULL, y = "Aantal", title = "Verdeling indices") +
+  theme(strip.text = element_text(size = 9))
+
+p_hist
+
+idx_gebied <- melt(
+  abio_proj[, .(Gebiedsnaam, erosieindex, oevervormindex, stabiliteitsindex)],
+  id.vars = "Gebiedsnaam",
+  measure.vars = c("erosieindex","oevervormindex","stabiliteitsindex"),
+  variable.name = "index", value.name = "waarde"
+)
+idx_gebied[, index_label := factor(index,
+  levels = c("erosieindex","oevervormindex","stabiliteitsindex"),
+  labels = c("Erosieindex", "Oevervormindex", "Stabiliteitsindex")
+)]
+
+# Sorteer gebieden op mediaan erosieindex
+gebied_order <- abio_proj[, .(med = median(erosieindex, na.rm = TRUE)), by = Gebiedsnaam][order(med), Gebiedsnaam]
+idx_gebied[, Gebiedsnaam := factor(Gebiedsnaam, levels = gebied_order)]
+
+ggplot(idx_gebied, aes(x = waarde, y = Gebiedsnaam)) +
+  geom_boxplot(outlier.size = 1) +
+  facet_wrap(~index_label, scales = "free_x") +
+  labs(x = "Indexwaarde", y = NULL, title = "Indices per gebied") +
+  theme(axis.text.y = element_text(size = 14))
 
 abio_proj[, slibdiepte := max_slib + max_wtd]
 abio_proj[, doorzicht2_mid_m :=  doorzicht2_mid_cm/100]

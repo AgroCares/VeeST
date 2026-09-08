@@ -452,6 +452,10 @@ abio_base <- copy(abio_proj)[
     !is.na(instanceID_veg) & !is.na(instanceID_abio)
 ]
 
+# Kolomnamen met µ/μ geven encoding-problemen op bij data.table's .SD/lapply
+# optimalisatie (symbool wordt niet correct herkend); vervang door 'u'.
+setnames(abio_base, old = names(abio_base), new = clean_micro(names(abio_base)))
+
 ## 2) drop: admin + geen variatie + LIAB/M3 via pars ----------
 keep_cols <- c("SlootID", "jaar", "WP", "clusters")
 
@@ -802,9 +806,10 @@ ggsave(
   width  = 35, height = 50, units = "cm", dpi = 300
 )
 # Define predictor variables with readable Dutch names
+# toevoegen totaal-P in toplaag oever
 cols_corr <- c("drglg", "max_wtd", "zichtdiepte", "max_slib", "watbte","oeverzone_2b_breedte_cm", "oeverzone_2b_kaal_perc", 
                "holleoever", "tldk_wtrwtr_perc", "tldk_oevrwtr_perc", "slib_redox_pH7","slib_pH",
-               "oevbte", "veentype_num", "Z_CLAY_SA_OR_25","OS_perc_OR_25","CEC_CO_mmol+/kg_OR_25",
+               "oevbte", "veentype_num", "Z_CLAY_SA_OR_25","OS_perc_OR_25","CEC_CO_mmol+/kg_OR_25", "P2O5_xrf_g/kg_OR_25",
                "draagkracht_oever", "dieptebin_min","draagkracht_perceel", "water_pH", "watertemp_C",
                'Cl_µmol/l_PW', "NH4_µmol/l_PW","P-AL mg p2o5/100g_SB","feP_PW",
               "Baggerfrequentie_per_jaar","Baggermoment_maand","Maaifrequentie_oever_per_jaar","Methode_toedienen_dierlijke_mest",
@@ -828,6 +833,7 @@ nederlandse_namen <- c(
   "Z_CLAY_SA_OR_25" = "Kleigehalte 25cm (%)",
   "OS_perc_OR_25" = "Organisch stofgehalte 25cm (%)",
   "CEC_CO_mmol+/kg_OR_25" = "Cation Exchange Capacity (mmol+/kg)",
+  "P2O5_xrf_g/kg_OR_25" = "Totaal P in toplaag oever (g/kg)",
   "draagkracht_oever" = "Draagkracht oever (MPa)",
   "dieptebin_min" = "Diepte laagste draagkracht (m)",
   "draagkracht_perceel" = "Draagkracht perceel (MPa)",
@@ -854,9 +860,14 @@ abio_proj[,draagkracht_perceel := as.numeric(draagkracht_perceel)]
 # Handle non-numeric columns
 abio_proj[,Maaifrequentie_oever_per_jaar := as.numeric(Maaifrequentie_oever_per_jaar)]
 abio_proj[,Maaifrequentie_perceel_per_jaar := as.numeric(Maaifrequentie_perceel_per_jaar)]
+# Bewaar de originele (character) waarden vóór omzetting naar numeriek,
+# zodat de join hieronder de brontekst kan gebruiken.
+bagger_orig_dt <- unique(
+  abio_proj[, .(instanceID_abio, bagger_orig = as.character(Baggermoment_maand))]
+)
 abio_proj[, Baggermoment_maand := {
   # Reset naar originele character waarden via join (voorkomt problemen als kolom al numeriek is)
-  orig <- unique(abio_proj_complete[, .(instanceID_abio, bagger_orig = as.character(Baggermoment_maand))])
+  orig <- bagger_orig_dt
   x <- orig[.SD, on = "instanceID_abio", bagger_orig]
   # n.v.t./onbekend -> NA, anders gemiddelde van komma-gescheiden maanden
   ifelse(
@@ -865,17 +876,21 @@ abio_proj[, Baggermoment_maand := {
     sapply(strsplit(x, ","), function(m) mean(as.numeric(trimws(m)), na.rm = TRUE))
   )
 }]
-abio_proj[,Methode_toedienen_dierlijke_mest := fcase(
-  Methode_toedienen_dierlijke_mest == "n.v.t./onbekend",              0,
-  Methode_toedienen_dierlijke_mest == "n.v.t",            0,
-  Methode_toedienen_dierlijke_mest == "sleepslang",          1,
-  Methode_toedienen_dierlijke_mest == "sleepslang en mesttank", 2,
-  Methode_toedienen_dierlijke_mest == "mesttank",            3,
-  Methode_toedienen_dierlijke_mest == "bovengronds_strooier", 4,
-  
-  Methode_toedienen_dierlijke_mest == "injecteren",          5,
-  default = NA_real_
-)]
+if (!is.character(abio_proj$Methode_toedienen_dierlijke_mest)) {
+  abio_proj[, Methode_toedienen_dierlijke_mest := as.numeric(Methode_toedienen_dierlijke_mest)]
+} else {
+  abio_proj[,Methode_toedienen_dierlijke_mest := fcase(
+    Methode_toedienen_dierlijke_mest == "n.v.t./onbekend",              0,
+    Methode_toedienen_dierlijke_mest == "n.v.t",            0,
+    Methode_toedienen_dierlijke_mest == "sleepslang",          1,
+    Methode_toedienen_dierlijke_mest == "sleepslang en mesttank", 2,
+    Methode_toedienen_dierlijke_mest == "mesttank",            3,
+    Methode_toedienen_dierlijke_mest == "bovengronds_strooier", 4,
+    
+    Methode_toedienen_dierlijke_mest == "injecteren",          5,
+    default = NA_real_
+  )]
+}
 abio_proj[,Baggerfrequentie_per_jaar := as.numeric(Baggerfrequentie_per_jaar)]
 abio_proj[,Aantal_koeien_vee_perceel_dag := as.numeric(Aantal_koeien_vee_perceel_dag)]
 abio_proj[,Aantal_Koedagen_per_jaar := as.numeric(Aantal_Koedagen_per_jaar)]
@@ -904,6 +919,14 @@ create_xgb_model <- function(target_var, predictors, data,
   model_vars <- c("SlootID", target_var, predictors)
   model_data <- copy(data[complete.cases(data[, ..model_vars]), ..model_vars])
 
+  if (nrow(model_data) == 0L) {
+    stop(
+      "create_xgb_model(", target_var, "): geen volledige observaties over ",
+      "na complete.cases() filtering op ", paste(model_vars, collapse = ", "),
+      ". Controleer op onverwacht veel NA's (bv. door een dubbele fcase()-omzetting)."
+    )
+  }
+
   # Convert factors to numeric for xgboost ------------------------------
   factor_cols <- unique(c(
     names(model_data)[sapply(model_data, is.character)],
@@ -929,13 +952,14 @@ create_xgb_model <- function(target_var, predictors, data,
   test_idx  <- idx[(val_end + 1):n]
 
   make_xgb_matrix <- function(dt, rows, cols) {
-    df <- as.data.frame(lapply(as.data.frame(dt[rows, ..cols]), as.double))
-    nr <- nrow(df); nc <- ncol(df)
-    m  <- matrix(unlist(df, use.names = FALSE), nrow = nr, ncol = nc)
+    # Bouw de matrix via as.matrix() op een data.frame i.p.v. handmatige
+    # unlist()/matrix()-constructie: die laatste kan een ALTREP/gedeelde
+    # buffer opleveren die xgboost's pointer-alignment check laat falen
+    # (array_interface.h:422) op Windows.
+    m <- as.matrix(as.data.frame(lapply(as.data.frame(dt[rows, ..cols]), as.double)))
+    storage.mode(m) <- "double"
     colnames(m) <- cols
-    # `+ 0` forces R to allocate a new REALSXP, breaking any ALTREP chain
-    # that causes XGBoost's pointer-alignment check to fail on Windows
-    m + 0
+    m
   }
 
   X_train <- make_xgb_matrix(model_data, train_idx, predictors_clean)
@@ -1535,7 +1559,7 @@ for (target in names(xgb_models)) {
   model_vars <- model_vars[model_vars %in% colnames(abio_proj)]
   model_data <- copy(abio_proj[complete.cases(abio_proj[, ..model_vars]), ..model_vars])
   factor_cols_2 <- names(model_data)[sapply(model_data, is.factor)]
-  factor_cols <- c(factor_cols, factor_cols_2)
+  factor_cols <- unique(c(factor_cols, factor_cols_2))
   model_data[, (factor_cols) := lapply(.SD, as.factor), .SDcols = factor_cols]
   model_data[, (factor_cols) := lapply(.SD, as.numeric), .SDcols = factor_cols]
   
@@ -1997,7 +2021,7 @@ create_xgb_diagnostics <- function(xgb_models, abio_proj, target_vars, target_na
       # Convert factors
       factor_cols <- names(model_data)[sapply(model_data, is.character)]
       factor_cols_2 <- names(model_data)[sapply(model_data, is.factor)]
-      factor_cols <- c(factor_cols, factor_cols_2)
+      factor_cols <- unique(c(factor_cols, factor_cols_2))
       if(length(factor_cols) > 0) {
         model_data[, (factor_cols) := lapply(.SD, as.factor), .SDcols = factor_cols]
         model_data[, (factor_cols) := lapply(.SD, as.numeric), .SDcols = factor_cols]

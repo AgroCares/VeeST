@@ -198,9 +198,16 @@ calc_taludhoek <- function(profiel_nr){
   #copy the trasnect of the oever
   dt1 <- setDT(profiel_nr)
 
-  #select first and last point first shore (3 meters from shoreline)
+  # Bepaal de insteek (grens oever-perceel) per oeverzijde, zodat de
+  # taludhoekbepaling nooit verder gaat dan de insteek. Als er voor een
+  # zijde geen insteek gerapporteerd is, wordt de grens niet beperkt (-Inf/Inf).
+  insteek_dt <- dt1[grepl('insteek', Opmerking)]
+  dist_insteek_1 <- if(nrow(insteek_dt[sectie_2 == 1]) > 0) min(insteek_dt[sectie_2 == 1, dist]) else -Inf
+  dist_insteek_2 <- if(nrow(insteek_dt[sectie_2 == 2]) > 0) max(insteek_dt[sectie_2 == 2, dist]) else Inf
+
+  #select first and last point first shore (3 meters from shoreline, maar niet verder dan de insteek)
   min_dist <- min(dt1[Opmerking == "waterlijn",'dist']) - 3
-  first_point <- dt1[sectie == 'oever' & dist > min_dist] 
+  first_point <- dt1[sectie == 'oever' & dist > min_dist & dist >= dist_insteek_1] 
   first_point <- first_point[Puntnummer == min(Puntnummer)]
   last_point <- dt1[sectie == 'water']
   last_point <- last_point[Puntnummer == min(Puntnummer)]
@@ -208,9 +215,9 @@ calc_taludhoek <- function(profiel_nr){
   tldk_bvwtr_perc_1 <-  100*(first_point$z-last_point$z) / (last_point$dist-first_point$dist)
   tldk_bvwtr_graden_1 <-  atan((first_point$z-last_point$z) / (last_point$dist-first_point$dist))*(180/pi)
   
-  #select first and last point second shore
+  #select first and last point second shore (maar niet verder dan de insteek)
   max_dist <- max(dt1[Opmerking == "waterlijn",'dist']) + 3
-  first_point <- dt1[sectie == 'oever' & dist < max_dist]
+  first_point <- dt1[sectie == 'oever' & dist < max_dist & dist <= dist_insteek_2]
   first_point <- first_point[Puntnummer == max(Puntnummer)]  
   last_point <- dt1[sectie == 'water']
   last_point <- last_point[Puntnummer == max(Puntnummer)] 
@@ -249,7 +256,7 @@ calc_taludhoek <- function(profiel_nr){
   waterlijn <- waterlijn[Puntnummer == min(Puntnummer)] # waterlijn sectie 1
   last_point <- dt1[z > waterlijn$z - 0.35 & sectie == 'water' & sectie_2 == 1]
   last_point <- last_point[Puntnummer == max(Puntnummer)]
-  first_point <- dt1[z < waterlijn$z +0.35 & sectie == 'oever' & sectie_2 == 1]
+  first_point <- dt1[z < waterlijn$z +0.35 & sectie == 'oever' & sectie_2 == 1 ]
   first_point <- first_point[Puntnummer == min(Puntnummer)]
   # calc angle
   tldk_wtrwtr_perc_1 <-  100*(waterlijn$z-last_point$z) / (last_point$dist-waterlijn$dist) # hoek rond waterlijn, het water in 
@@ -260,7 +267,7 @@ calc_taludhoek <- function(profiel_nr){
   waterlijn <- waterlijn[Puntnummer == max(Puntnummer)] # waterlijn sectie 1
   last_point <- dt1[z > waterlijn$z -0.35 & sectie == 'water' & sectie_2 == 2]
   last_point <- last_point[Puntnummer == min(Puntnummer)]
-  first_point <- dt1[z < waterlijn$z +0.35 & sectie == 'oever' & sectie_2 == 2]
+  first_point <- dt1[z < waterlijn$z +0.35 & sectie == 'oever' & sectie_2 == 2 ]
   first_point <- first_point[Puntnummer == max(Puntnummer)]
   # calc angle
   tldk_wtrwtr_perc_2 <-  100*(waterlijn$z-last_point$z) / (waterlijn$dist-last_point$dist) # hoek rond waterlijn, het water in 
