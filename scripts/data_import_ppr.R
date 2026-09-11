@@ -647,6 +647,22 @@ penmerge_wide[, `:=`(
 )]
 penmerge_wide <- merge(penmerge_wide, penmerge_wide2, by = c('SlootID','jaar'), all.x = TRUE)
 
+## draagkracht per sectie: rechtstreeks berekend uit de ruwe indringingsweerstand-metingen
+# als 0 worden meegenomen ipv als NA - zie dcast(..., fill = FALSE) hierboven).
+# Intervallen: oever/insteek/perceel 10-50 cm, perceel 50-80 cm (dieper penetrometertraject).
+draagkracht_diep <- penmerge[
+  !is.na(Diept) & !is.na(indringingsweerstand) &
+    ((sectie %in% c("oever", "insteek", "perceel") & Diept > 10 & Diept <= 50) |
+     (sectie == "perceel" & Diept > 50 & Diept <= 80)),
+  .(waarde = mean(indringingsweerstand, na.rm = TRUE)),
+  by = .(SlootID, jaar,
+         component = fifelse(sectie == "perceel" & Diept > 50, "draagkracht_perceel_diep",
+                              paste0("draagkracht_", sectie)))
+]
+draagkracht_wide <- dcast(draagkracht_diep, SlootID + jaar ~ component, value.var = "waarde")
+penmerge_wide <- merge(penmerge_wide, draagkracht_wide, by = c("SlootID", "jaar"), all.x = TRUE)
+rm(draagkracht_diep, draagkracht_wide)
+
 ## 4.4 validatie regels penetrometer 24 en 25-------------------------
 # check 4 double coordinates in pen_gps
 gps <- st_as_sf(gps)
@@ -853,6 +869,21 @@ profiel[, oevbte := {
   }
 }, by = c('ID','sectie_2')]
 
+# hoogteverschil (z) tussen waterlijn en dichtstbijzijnde meetpunt op de oever, per sectie
+# (dichtstbijzijnde oeverpunt = eerste oeverpunt grenzend aan de waterlijn)
+profiel[, hgt_wl_oever := {
+  # wl is niet op elke rij ingevuld (alleen op waterpunten); gebruik het
+  # gemiddelde binnen de groep (is toch al constant per ID, zie hierboven)
+  wl_sectie <- mean(wl, na.rm = TRUE)
+  if(is.na(sectie_2[1]) || is.nan(wl_sectie)){
+    NA_real_
+  } else if(sectie_2[1] == 1){
+    if(any(sectie == 'oever')) z[Puntnummer == max(Puntnummer[sectie == 'oever'])] - wl_sectie else NA_real_
+  } else {
+    if(any(sectie == 'oever')) z[Puntnummer == min(Puntnummer[sectie == 'oever'])] - wl_sectie else NA_real_
+  }
+}, by = c('ID','sectie_2')]
+
 ### 6.2.2a correct sectie -------------------------------------
 profiel[name == 'IG_10_WP1' & Puntnummer > 31 & jaar == 2025, sectie := 'perceel']
 profiel[name == 'WZ_1_WP1' & Puntnummer > 45 & jaar == 2025, sectie := 'perceel']
@@ -902,7 +933,7 @@ profiel[, geom := sprintf("LINESTRING(%s %s, %s %s)", x_begin, y_begin, x_eind, 
 ## 6.3 Aggregate profiel 2 data wide -------------------------
 profiel_wide <- dcast(profiel,name+geom+sectie_2+jaar~., value.var=c('max_slib','max_wtd','watbte','drglg','drglg_2','oevbte',
                                                                 'tldk_bvwtr_perc','tldk_ondwtr_perc','tldk_wtrwtr_perc','tldk_oevrwtr_perc',
-                                                                'tldk_vastbodem_perc','max_hgt_or','wl'), 
+                                                                'tldk_vastbodem_perc','max_hgt_or','wl','hgt_wl_oever'), 
                       fun.aggregate = mean, na.rm = TRUE, fill = FALSE, drop = TRUE)
 profiel_wide_2 <- dcast(profiel,name+sectie_2+jaar~sectie, value.var=c('mean_talud','mean_talud_os'), 
                       fun.aggregate = mean, na.rm = TRUE, fill = FALSE, drop = TRUE)
@@ -915,7 +946,7 @@ profiel_wide[is.na(tldk_oevrwtr_perc), tldk_oevrwtr_perc := tldk_bvwtr_perc]
 profiel_wide <- st_as_sf(profiel_wide, wkt = "geom", crs = 28992)
 profiel_wide <- profiel_wide[,c('name','sectie_2','jaar','max_slib','max_wtd','watbte','oevbte','drglg','drglg_2',
                                 'tldk_wtrwtr_perc','tldk_oevrwtr_perc',
-                                'tldk_vastbodem_perc','max_hgt_or','wl','geom')]
+                                'tldk_vastbodem_perc','max_hgt_or','wl','hgt_wl_oever','geom')]
 
 ### 6.3.1 intersect locations with profiel_wide ---------------------
 locaties <- st_as_sf(locaties) %>% st_transform(crs = 28992)

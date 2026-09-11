@@ -116,6 +116,17 @@ $$Eh_7 = Eh_{\text{gemeten}} + (7 - pH_{\text{gemeten}}) \times 59$$
   - Diepteinterval draagkracht oever: 0-40 cm
 Daarnaast is de minimale draagkracht per zone berekend en de diepte waar deze is gemeten.
 
+**Koebelasting drinkende koeien**: deze afgeleide variabele geeft een proxy voor de belasting van de oever door koeien die uit de sloot drinken (relevant voor vertrapping en begrazing van de oever). De afleiding volgt een beslisregel op basis van vier brondata: aanwezigheid van afrastering langs de sloot, of koeien al dan niet uit de sloot drinken, aanwezigheid van drinkbakken, en het aantal koeien/koedagen per perceel:
+
+- Is de sloot (deels) afgerasterd (`uitraster_perc_slootid` > 0%), dan wordt de koebelasting op 0 gezet — koeien hebben dan geen toegang tot het water.
+- Is bekend dat koeien niet uit de sloot drinken (`Koeien_drinken_sloot`), dan wordt de koebelasting eveneens op 0 gezet.
+- Ontbreken het aantal koeien per perceel per dag of het aantal koedagen per jaar, dan is de koebelasting onbekend (NA).
+- In overige gevallen wordt de koebelasting berekend als:
+
+$$\text{Koebelasting} = \text{Aantal koeien/perceel/dag} \times \frac{\text{Aantal koedagen/jaar}}{365} \times \text{Natte omtrek oever}$$
+
+waarbij de natte omtrek van de oever (`omtrek_nat`) een maat is voor hoeveel slootoever daadwerkelijk bereikbaar is voor drinkende koeien. Vrij-tekstwaarden voor drinkgedrag en drinkbakaanwezigheid (bijv. "ja"/"nee"/"onbekend"-varianten) zijn eerst genormaliseerd naar TRUE/FALSE/NA.
+
 ## Vergelijking meting met veensloottypen
 
 De VeeST-meetlocaties zijn geselecteerd op basis van acht veensloottypen (clusters) die in de verkenningsfase ruimtelijk zijn bepaald op basis van vier GIS-variabelen: drooglegging (AHN3 maaiveld minus jaarrondstreefpeil uit NHI), waterbreedte, organisch stofgehalte (25 cm) en kleigehalte (25 cm). Om te beoordelen hoe representatief de veldmetingen zijn voor deze typen, zijn de gemeten abiotische waarden vergeleken met de GIS-clusterwaarden via twee complementaire analyses:

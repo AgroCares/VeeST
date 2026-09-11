@@ -535,6 +535,23 @@ id_exclude <- c(
   "geom", "geometry", "clusters", "cluster_abio", "cluster_loc"
 )
 
+## Handmatige exclusie: variabelen die inhoudelijk hetzelfde indiceren als
+## een andere variabele die al is opgenomen, of dubbel voorkomen met
+## verschillende eenheden.
+manual_exclude <- c(
+  # P2O5_xrf in oever en slib is vergelijkbaar met P-AL -> P-AL aanhouden
+  "P2O5_xrf_g/kg_OR_25", "P2O5_xrf_g/kg_OR_50", "P2O5_xrf_g/kg_SB",
+  # P-AL op 50cm oever niet gebruiken, enkel op 25cm/slib
+  "P-AL mg p2o5/100g_OR_50", "P-AL mg/kg_OR_50",
+  # Cl in umol/l dubbel met mg/l -> mg/l aanhouden
+  # (kolomnamen bevatten na clean_micro() 'umol', niet 'µmol')
+  "Cl_umol/l_OW", "Cl_2_umol/l_OW", "Cl_umol/l_PW", "Cl_2_umol/l_PW",
+  # Natrium in oppervlaktewater (umol/l) mag weg, poriewater (umol/l) blijft
+  "Na_umol/l_OW", "Na_2_umol/l_OW"
+)
+manual_exclude <- intersect(manual_exclude, names(abio_proj_clean))
+abio_proj_clean <- abio_proj_clean[, setdiff(names(abio_proj_clean), manual_exclude), with = FALSE]
+
 logi_cols <- names(abio_proj_clean)[vapply(abio_proj_clean, is.logical, logical(1))]
 if (length(logi_cols) > 0L) {
   abio_proj_clean[, (logi_cols) := lapply(.SD, as.numeric), .SDcols = logi_cols]
@@ -813,7 +830,8 @@ cols_corr <- c("drglg", "max_wtd", "zichtdiepte", "max_slib", "watbte","oeverzon
                "draagkracht_oever", "dieptebin_min","draagkracht_perceel", "water_pH", "watertemp_C",
                'Cl_µmol/l_PW', "NH4_µmol/l_PW","P-AL mg p2o5/100g_SB","feP_PW",
               "Baggerfrequentie_per_jaar","Baggermoment_maand","Maaifrequentie_oever_per_jaar","Methode_toedienen_dierlijke_mest",
-              "koebelasting_drinkende_koeien", "koeien_drinken_correctie","vernat_loc")
+              "koebelasting_drinkende_koeien", "vernat_loc",
+              "afscheur_opp","kraggevorming_flag","oeverzone_2b_grillig")
 # Create readable Dutch names mapping
 nederlandse_namen <- c(
   "drglg" = "Drooglegging (m)",
@@ -848,7 +866,9 @@ nederlandse_namen <- c(
   "Maaifrequentie_oever_per_jaar"= "Maaifrequentie oever per jaar",
   "Methode_toedienen_dierlijke_mest" = "Methode toedienen dierlijke mest",
   "koebelasting_drinkende_koeien" = "Koebelasting drinkende koeien",
-  "Koeien_drinken_sloot" = "Koeien drinken uit sloot correctie (ja/nee)"
+    "afscheur_opp" = "Afscheurende oever (cm2)",
+  "kraggevorming_flag" = "Kraggevorming (ja/nee)",
+  "oeverzone_2b_grillig" = "Grilligheid oeverlijn zone 2b"
 )
 
 ## Preparation-------------------------------------------------------------------
@@ -1397,6 +1417,13 @@ ggsave(
   width = 35, height = 30, units = "cm", dpi = 300
 )
 
+## Instelling: ALE-plots (berekenen/printen/opslaan) aan- of uitzetten --------
+# ALE-berekeningen (Accumulated Local Effects) zijn rekenintensief (herhaalde
+# predict()-aanroepen per feature per target). Zet RUN_ALE_PLOTS op FALSE om
+# deze sectie over te slaan (functies blijven wel gedefinieerd, alleen de
+# uitvoering/opslag/print van de plots wordt overgeslagen).
+RUN_ALE_PLOTS <- TRUE
+
 ## Manual ALE calculation function (without ALEPlot package) ------------------
 calculate_ale_manual <- function(model, X_data, feature_idx, K = 50) {
   feature_values <- suppressWarnings(as.numeric(X_data[, feature_idx]))
@@ -1548,6 +1575,9 @@ create_ale_plots_manual <- function(model, X_data, y_data, target_name) {
 
   ale_plots
 }
+
+if (RUN_ALE_PLOTS) {
+
 # Create ALE plots for all models
 all_ale_plots <- list()
 # r
@@ -1572,25 +1602,49 @@ for (target in names(xgb_models)) {
   ale_plots <- create_ale_plots_manual(xgb_models[[target]], X_data, y_data, target)
   all_ale_plots[[target]] <- ale_plots
 }
-# Display and save ALE plots for each target
-for (tgt in names(all_ale_plots)) {
-  
-  target_dutch <- target_names_dutch[tgt]
-  perf <- performance_summary[target == tgt]
-  
-  cat("\n=== ALE Plots for", target_dutch, "===\n")
-  cat("RMSE:", round(perf$rmse_test, 3), "| R²:", round(perf$r2_test * 100, 1), "%\n")
-  
-  if (length(all_ale_plots[[tgt]]) > 0) {
-    for (plot_name in names(all_ale_plots[[tgt]])) {
-      cat("Showing ALE plot for:", plot_name, "\n")
-      all_ale_plots[[tgt]][[plot_name]]
-    }
-  }
+## Kantelpunten detectie in ALE-curves ----------------------------------------
+# Vroeg gedefinieerd zodat zowel create_combined_ale_plots() als de
+# per-target top-5 loop hieronder deze functie kunnen gebruiken.
+detect_tipping_points <- function(x, y, min_effect_range = 0.01, min_jump_pct = 0.15) {
+  effect_range <- diff(range(y, na.rm = TRUE))
+
+  # Sla hele curve over als totaal bereik te klein is
+  if (effect_range < min_effect_range || length(x) < 4) return(NULL)
+
+  dy <- diff(y)
+  dx <- diff(x)
+
+  # 1. Lokale extrema via tekenwissel in dy
+  sign_ch <- which(diff(sign(dy)) != 0) + 1
+
+  # Filter: alleen bewaren als de sprong rondom het punt >= min_jump_pct * effect_range
+  min_jump_abs <- min_jump_pct * effect_range
+  sign_ch_filtered <- sign_ch[vapply(sign_ch, function(i) {
+    left  <- if (i > 1)           abs(dy[i - 1]) else 0
+    right <- if (i <= length(dy)) abs(dy[i])     else 0
+    max(left, right) >= min_jump_abs
+  }, logical(1))]
+
+  # 2. Steilste helling
+  slopes       <- dy / dx
+  steepest_idx <- which.max(abs(slopes)) + 1
+
+  local_extrema <- if (length(sign_ch_filtered)) {
+    data.frame(x = x[sign_ch_filtered], y = y[sign_ch_filtered], type = "Lokaal extremum")
+  } else NULL
+
+  list(
+    local_extrema = local_extrema,
+    steepest      = data.frame(x = x[steepest_idx], y = y[steepest_idx], type = "Steilste helling")
+  )
 }
 
+# Gedeelde accumulator voor kantelpunten (gevuld door create_combined_ale_plots()
+# en door de per-target top-5 loop verderop), gebruikt voor het CSV-overzicht.
+tipping_records <- list()
+
 ## ALE plots combinatie: sturende variabelen op alle targets ------------------
-# Functie om gecombineerde plots te maken met echte data + ALE effect
+# Functie om gecombineerde plots te maken met echte data + ALE effect + kantelpunten
 create_combined_ale_plots <- function() {
   ale_variables <- cols_corr
   combined_plots <- list()
@@ -1689,7 +1743,29 @@ create_combined_ale_plots <- function() {
       y_min_pos <- ale_tgt$ale_scaled[which.min(ale_tgt$ale_effect)]
       y_max_pos <- ale_tgt$ale_scaled[which.max(ale_tgt$ale_effect)]
 
-      ggplot() +
+      # Kantelpunten detecteren op de ruwe (ongeschaalde) ALE-curve
+      tp <- detect_tipping_points(ale_tgt$x, ale_tgt$ale_effect)
+
+      # Sla kantelpunten op voor het overzichts-CSV
+      if (!is.null(tp)) {
+        tp_all <- rbind(
+          if (!is.null(tp$local_extrema)) tp$local_extrema else NULL,
+          tp$steepest
+        )
+        if (!is.null(tp_all) && nrow(tp_all) > 0) {
+          tipping_records[[length(tipping_records) + 1]] <<- data.table(
+            target     = tgt,
+            target_nl  = tgt_nl,
+            predictor  = var,
+            pred_nl    = var_name_dutch,
+            type       = tp_all$type,
+            x_waarde   = round(tp_all$x, 4),
+            ale_effect = round(tp_all$y, 4)
+          )
+        }
+      }
+
+      p <- ggplot() +
         geom_point(
           data = real_tgt,
           aes(x = x, y = y),
@@ -1735,6 +1811,51 @@ create_combined_ale_plots <- function() {
           panel.border       = element_rect(colour = "grey80", fill = NA, linewidth = 0.4),
           plot.margin        = margin(4, 6, 4, 6)
         )
+
+      # Kantelpunten annoteren (steilste helling + lokale extrema), in
+      # geschaalde as-eenheden zodat ze op de zwarte ALE-lijn vallen
+      if (!is.null(tp)) {
+        y_steepest_scaled <- y_med + tp$steepest$y * sf
+        p <- p +
+          geom_vline(
+            xintercept = tp$steepest$x,
+            linetype   = "dashed",
+            color      = "#CC79A7",
+            linewidth  = 0.6,
+            alpha      = 0.9
+          ) +
+          annotate(
+            "label",
+            x      = tp$steepest$x,
+            y      = Inf,
+            label  = round(tp$steepest$x, 2),
+            vjust  = 1.3,
+            size   = 2.2,
+            fontface = "bold",
+            color  = "#CC79A7",
+            fill   = "white",
+            label.padding = unit(0.12, "lines")
+          )
+
+        if (!is.null(tp$local_extrema) && nrow(tp$local_extrema) > 0) {
+          extrema_scaled <- tp$local_extrema
+          extrema_scaled$y_scaled <- y_med + extrema_scaled$y * sf
+          p <- p +
+            geom_point(
+              data  = extrema_scaled,
+              aes(x = x, y = y_scaled),
+              color = "red", size = 2, shape = 16, inherit.aes = FALSE
+            ) +
+            geom_label(
+              data  = extrema_scaled,
+              aes(x = x, y = y_scaled, label = round(x, 2)),
+              vjust = -0.6, size = 2, color = "red", fill = "white",
+              label.padding = unit(0.1, "lines"), inherit.aes = FALSE
+            )
+        }
+      }
+
+      p
     })
 
     n_tgts  <- length(sub_plots)
@@ -1746,7 +1867,8 @@ create_combined_ale_plots <- function() {
         title    = paste("Effect van", var_name_dutch, "op alle doelvariabelen"),
         subtitle = paste0(
           "Grijze punten = waarnemingen  |  Zwarte lijn = ALE (geschaald naar linkeras)  |",
-          "  Rode lijn = mediaan (ALE=0)  |  Rechteras = ALE effect"
+          "  Rode lijn = mediaan (ALE=0)  |  Rechteras = ALE effect\n",
+          "Roze stippellijn = steilste helling  |  Rode stippen = lokale extrema (kantelpunten)"
         ),
         theme = theme(
           plot.title    = element_text(size = 13, face = "bold", hjust = 0.5),
@@ -1779,91 +1901,10 @@ for(var in names(combined_ale_plots)) {
 }
 cat("\nAlle gecombineerde ALE plots zijn voltooid en opgeslagen!\n")
 
-### ALE combi-plot per target: top predictoren per doelvariabele ----
-# ALE combi-plot per target: top predictoren per doelvariabele in één figuur
-library(patchwork)
-top_n <- 5
-
-for (tgt in names(all_ale_plots)) {
-  
-  top_feats <- all_importance[target_var == tgt][order(-Gain)][1:min(.N, top_n), Feature]
-  top_feats <- top_feats[top_feats %in% names(all_ale_plots[[tgt]])]
-  if (length(top_feats) == 0) next
-  
-  plots <- lapply(top_feats, function(feat) {
-    dutch_name <- all_importance[target_var == tgt & Feature == feat, Nederlandse_naam]
-    gain_val   <- all_importance[target_var == tgt & Feature == feat, round(Gain, 3)]
-    p <- all_ale_plots[[tgt]][[feat]]
-    p + labs(title = paste0(dutch_name, "
-(Gain: ", gain_val, ")"), subtitle = NULL, x = NULL, y = "ALE effect") +
-      theme_minimal(base_size = 9) +
-      theme(
-        plot.title   = element_text(size = 8, face = "bold", hjust = 0.5),
-        axis.text    = element_text(size = 7),
-        axis.title.y = element_text(size = 7.5),
-        panel.border = element_rect(colour = "grey80", fill = NA, linewidth = 0.4),
-        plot.margin  = margin(4, 8, 4, 8)
-      )
-  })
-  
-  title_str <- all_importance[target_var == tgt, target_dutch[1]]
-  perf_str  <- all_importance[target_var == tgt, paste0("R²: ", round(r2_test[1]*100,1), "%  |  RMSE: ", round(rmse_test[1],3), " ", rmse_unit[1])]
-  
-  panel <- wrap_plots(plots, nrow = 1) +
-    plot_annotation(
-      title    = paste0("ALE plots — ", title_str),
-      subtitle = perf_str,
-      theme = theme(
-        plot.title    = element_text(size = 11, face = "bold", hjust = 0.5),
-        plot.subtitle = element_text(size = 9, color = "grey40", hjust = 0.5)
-      )
-    )
-  
-  outfile <- paste0("output/AlleGebieden/Tussenrapportage/ALE_top5_", tgt, ".png")
-  print(panel)
-  ggsave(outfile, panel, width = 35, height = 12, units = "cm", dpi = 200)
-  cat("Opgeslagen:", outfile, "\n")
-}
-
-## Kantelpunten detectie in ALE-curves ----------------------------------------
-
-detect_tipping_points <- function(x, y, min_effect_range = 0.01, min_jump_pct = 0.15) {
-  effect_range <- diff(range(y, na.rm = TRUE))
-
-  # Sla hele curve over als totaal bereik te klein is
-  if (effect_range < min_effect_range || length(x) < 4) return(NULL)
-
-  dy <- diff(y)
-  dx <- diff(x)
-
-  # 1. Lokale extrema via tekenwissel in dy
-  sign_ch <- which(diff(sign(dy)) != 0) + 1
-
-  # Filter: alleen bewaren als de sprong rondom het punt >= min_jump_pct * effect_range
-  min_jump_abs <- min_jump_pct * effect_range
-  sign_ch_filtered <- sign_ch[vapply(sign_ch, function(i) {
-    left  <- if (i > 1)           abs(dy[i - 1]) else 0
-    right <- if (i <= length(dy)) abs(dy[i])     else 0
-    max(left, right) >= min_jump_abs
-  }, logical(1))]
-
-  # 2. Steilste helling
-  slopes       <- dy / dx
-  steepest_idx <- which.max(abs(slopes)) + 1
-
-  local_extrema <- if (length(sign_ch_filtered)) {
-    data.frame(x = x[sign_ch_filtered], y = y[sign_ch_filtered], type = "Lokaal extremum")
-  } else NULL
-
-  list(
-    local_extrema = local_extrema,
-    steepest      = data.frame(x = x[steepest_idx], y = y[steepest_idx], type = "Steilste helling")
-  )
-}
-
-## Loop over alle targets: ALE plots met kantelpunten -------------------------
-
-tipping_records <- list()
+## Loop over alle targets: ALE plots met kantelpunten (top-5 per target) -----
+# detect_tipping_points() is hierboven al gedefinieerd (voor create_combined_ale_plots());
+# tipping_records is ook al hierboven geïnitialiseerd zodat records van beide
+# bronnen (combined_ale_plots + deze per-target loop) samen in het CSV-overzicht komen.
 
 for (tgt in names(all_ale_plots)) {
 
@@ -1997,6 +2038,8 @@ write.csv(
   file = paste0(workspace, "output/AlleGebieden/Tussenrapportage/ALE_tipping_points_summary.csv"),
   row.names = FALSE
 )
+
+} # einde if (RUN_ALE_PLOTS)
 
 ## Functie voor XGBoost model diagnostiek en validatie ------------------------
 # Functie voor XGBoost model diagnostiek
@@ -2529,37 +2572,6 @@ ggsave(
   width = 30, height = 20, units = "cm", dpi = 300
 )
 
-## Doelvariabelen per waterschap ------------------------------------------------
-ggplot(abio_proj, aes(x = text, y = waarde, fill = groep)) +
-  geom_boxplot(alpha = 0.75, outlier.alpha = 0.3, outlier.size = 0.8) +
-  facet_wrap(~ variabele_nl, scales = "free_y", ncol = 2) +
-  scale_fill_manual(
-    values = c(
-      "Goed voorspeld"   = "#0072B2",
-      "Gemiddeld"        = "#009E73",
-      "Slecht voorspeld" = "#D55E00",
-      "Klein (n=4)"      = "#999999"
-    ),
-    name = "CV prestatie"
-  ) +
-  labs(
-    title    = "Beheervariabelen per waterschap",
-    subtitle = "Oranje = slecht voorspeld (WDOD, HDL), blauw = goed voorspeld (AGV, HHNK, Rijnland)",
-    x        = NULL,
-    y        = "Waarde"
-  ) +
-  theme_minimal(base_size = 10) +
-  theme(
-    axis.text.x      = element_text(angle = 45, hjust = 1, size = 8),
-    strip.text       = element_text(size = 8.5, face = "bold"),
-    strip.background = element_rect(fill = "grey95", colour = "grey70", linewidth = 0.5),
-    panel.border     = element_rect(colour = "grey80", fill = NA, linewidth = 0.4),
-    legend.position  = "bottom",
-    plot.title       = element_text(size = 12, face = "bold", hjust = 0.5),
-    plot.subtitle    = element_text(size = 9, hjust = 0.5, color = "grey40")
-  )
-
-print(p_beheer)
 ## Beheervariabelen per waterschap --------------------------------------------
 
 beheer_vars <- c(
@@ -2994,7 +3006,10 @@ rf_nederlandse_namen <- c(
   "Methode_toedienen_dierlijke_mest" = "Methode toedienen dierlijke mest",
   "koebelasting_drinkende_koeien"  = "Koebelasting drinkende koeien",
   "koeien_drinken_correctie"       = "Koeien drinken correctie",
-  "vernat_loc"                     = "Vernatting locatie"
+  "vernat_loc"                     = "Vernatting locatie",
+  "afscheur_opp"       = "Oppervlak afscheurende oever (cm2)",
+  "kraggevorming_flag"             = "Kraggevorming (ja/nee)",
+  "oeverzone_2b_grillig"           = "Grilligheid oeverlijn zone 2b"
 )
 
 rf_rmse_units <- c(
@@ -3550,7 +3565,9 @@ saveRDS(all_rf_importance,  paste0(rds_dir, "all_rf_importance.rds"))
 saveRDS(all_importance,     paste0(rds_dir, "all_importance.rds"))
 saveRDS(rf_target_names_dutch, paste0(rds_dir, "rf_target_names_dutch.rds"))
 saveRDS(rf_rmse_units,      paste0(rds_dir, "rf_rmse_units.rds"))
-saveRDS(cluster_afwijking_long, paste0(rds_dir, "cluster_afwijking_long.rds"))
+# afwijking_long is al eerder in dit script opgeslagen als "cluster_afwijking_long.rds"
+# (zie regel ~432); cluster_afwijking_long bestond niet als object, dus deze
+# regel gaf een fout. Verwijderd om duplicatie/undefined-object te vermijden.
 
 cat("RDS bestanden opgeslagen in:", rds_dir, "\n")
 list.files(rds_dir)

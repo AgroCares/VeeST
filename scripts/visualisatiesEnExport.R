@@ -7922,6 +7922,40 @@ setDT(gps25)
 write.table(gps25, file = paste(workspace,"/output/Database/gps_penetrometer_25",format(Sys.time(),"%Y%m%d%H%M"),".csv", sep= ""), quote = FALSE, na = "", sep =';', row.names = FALSE)
 gps26 <- st_as_sf(gps26)
 st_write(gps26, paste0(workspace,  "output/GIS/gps_penetrometer_26.gpkg"), append = FALSE)
+penmerge_gps <- merge(unique(locaties[,c('SlootID','geom')]), penmerge_wide, by = "SlootID")
+
+## penmerge als sf object (eigen puntgeometrie uit de gps-koppeling) --------
+setDT(penmerge)
+penmerge[, jaar := as.integer(jaar)]
+# geom is voor het merendeel van de rijen leeg (alleen bij de oudste GPS-data
+# gevuld); geometry is voor alle rijen gevuld en is dus de bruikbare kolom
+penmerge_geo <- copy(penmerge)
+if ("geom" %in% names(penmerge_geo)) penmerge_geo[, geom := NULL]
+# GPKG/OGR-veldnamen zijn niet hoofdlettergevoelig: "Pen" en "pen" botsen dan
+# als hetzelfde veld. Hernoemen om het duplicaat-fout bij st_write te voorkomen.
+if (all(c("Pen", "pen") %in% names(penmerge_geo))) {
+  setnames(penmerge_geo, "pen", "pen_nr")
+}
+penmerge_geo <- st_as_sf(penmerge_geo, sf_column_name = "geometry") %>% st_transform(crs = 28992)
+st_write(penmerge_geo, paste0(workspace, "output/GIS/penmerge_geo.gpkg"), append = FALSE)
+
+## penmerge_wide als sf object (geometrie uit locaties, per SlootID+jaar) ---
+# penmerge_wide is geaggregeerd op SlootID/jaar en heeft zelf geen
+# geometriekolom; koppel de lijngeometrie uit locaties
+setDT(locaties)
+locaties[, jaar := as.integer(jaar)]
+locaties_geo_sel <- locaties[, c('SlootID', 'jaar', 'geom')]
+locaties_geo_sel <- locaties_geo_sel[!duplicated(locaties_geo_sel[, c('SlootID', 'jaar')]), ]
+setDT(penmerge_wide)
+penmerge_wide[, jaar := as.integer(jaar)]
+penmerge_wide_geo <- merge(
+  locaties_geo_sel,
+  penmerge_wide,
+  by = c('SlootID', 'jaar'),
+  all.x = FALSE
+)
+penmerge_wide_geo <- st_as_sf(penmerge_wide_geo, sf_column_name = "geom") %>% st_transform(crs = 28992)
+st_write(penmerge_wide_geo, paste0(workspace, "output/GIS/penmerge_wide_geo.gpkg"), append = FALSE)
 
 ## locatieinfo Bware ------------------------------------------------------
 write.table(abio_proj[jaar == '2025' & WP == 'WP1',c('SlootID','Gebiedsnaam','jaar','Slibmonster_Bware','Waterkwaliteitmonster_Bware','drlg','max_wtd','max_slib','watbte','slib_conductiviteit_uS_cm','slib_O2_mgL','slib_redox_mgL','slib_pH','BODEMCODE','veentype','trofie','text',
